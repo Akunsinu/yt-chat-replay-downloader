@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat Replay Downloader</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="panel">
+    <header class="panel-header">
+      <h1>Chat Replay Downloader</h1>
+    </header>
+
+    <!-- Not on YouTube -->
+    <section id="state-not-youtube" class="state-section hidden">
+      <div class="info-box">
+        <p>Navigate to a YouTube video with chat replay to get started.</p>
+      </div>
+    </section>
+
+    <!-- No chat replay -->
+    <section id="state-no-replay" class="state-section hidden">
+      <div class="video-info" id="no-replay-video-info"></div>
+      <div class="info-box warning">
+        <p>This video does not have a chat replay available.</p>
+        <p class="hint">Chat replay is only available on past live streams and premieres.</p>
+      </div>
+      <button id="btn-recheck" class="btn btn-secondary">Re-check Page</button>
+    </section>
+
+    <!-- Ready to fetch -->
+    <section id="state-ready" class="state-section hidden">
+      <div class="video-info" id="ready-video-info"></div>
+      <div class="status-badge ready">Ready</div>
+      <button id="btn-start" class="btn btn-primary">Start Fetching Chat</button>
+    </section>
+
+    <!-- Fetching -->
+    <section id="state-fetching" class="state-section hidden">
+      <div class="video-info" id="fetching-video-info"></div>
+      <div class="status-badge fetching">Fetching...</div>
+      <div class="progress-section">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-stats">
+          <span id="message-count">0</span> messages fetched
+        </div>
+      </div>
+      <div id="rate-limit-warning" class="info-box warning hidden">
+        <p>Rate limited. Waiting before retrying...</p>
+      </div>
+      <button id="btn-stop" class="btn btn-danger">Stop Fetching</button>
+      <div class="preview-section">
+        <h3>Preview (latest messages)</h3>
+        <div id="preview-messages" class="preview-messages"></div>
+      </div>
+    </section>
+
+    <!-- Complete -->
+    <section id="state-complete" class="state-section hidden">
+      <div class="video-info" id="complete-video-info"></div>
+      <div class="status-badge complete">Complete</div>
+      <div class="progress-stats complete-stats">
+        <span id="total-messages">0</span> messages collected
+      </div>
+      <div class="export-section">
+        <h3>Export Options</h3>
+        <div class="option-group">
+          <label class="option-label">Format</label>
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="format" value="csv" checked> CSV
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="format" value="html"> HTML
+            </label>
+          </div>
+        </div>
+        <div class="option-group hidden" id="theme-options">
+          <label class="option-label">Theme</label>
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="theme" value="dark" checked> Dark
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="theme" value="light"> Light
+            </label>
+          </div>
+        </div>
+        <div class="option-group">
+          <label class="option-label">Message Types</label>
+          <div class="checkbox-group">
+            <label class="checkbox-option">
+              <input type="checkbox" name="filter" value="text" checked> Text
+            </label>
+            <label class="checkbox-option">
+              <input type="checkbox" name="filter" value="superchat" checked> Super Chat
+            </label>
+            <label class="checkbox-option">
+              <input type="checkbox" name="filter" value="membership" checked> Membership
+            </label>
+            <label class="checkbox-option">
+              <input type="checkbox" name="filter" value="supersticker" checked> Super Sticker
+            </label>
+          </div>
+        </div>
+        <button id="btn-download" class="btn btn-primary">Download</button>
+      </div>
+      <button id="btn-refetch" class="btn btn-secondary">Fetch Again</button>
+    </section>
+
+    <!-- Error -->
+    <section id="state-error" class="state-section hidden">
+      <div class="video-info" id="error-video-info"></div>
+      <div class="status-badge error">Error</div>
+      <div class="info-box error">
+        <p id="error-message">An error occurred.</p>
+      </div>
+      <div id="error-partial" class="hidden">
+        <div class="progress-stats">
+          <span id="error-message-count">0</span> messages collected before error
+        </div>
+        <button id="btn-download-partial" class="btn btn-secondary">Download Partial Data</button>
+      </div>
+      <button id="btn-retry" class="btn btn-primary">Retry</button>
+    </section>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>
