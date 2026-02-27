@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Video Archiver</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="panel">
+    <header class="panel-header">
+      <h1>YouTube Video Archiver</h1>
+    </header>
+
+    <!-- Not on YouTube -->
+    <section id="state-not-youtube" class="state-section hidden">
+      <div class="info-box">
+        <p>Navigate to a YouTube video to get started.</p>
+      </div>
+    </section>
+
+    <!-- Video Detected: Archive Dashboard -->
+    <section id="state-detected" class="state-section hidden">
+      <div class="video-info" id="video-info"></div>
+
+      <!-- Archive Steps -->
+      <div class="steps-section">
+        <h3>Archive Steps</h3>
+        <div class="step" id="step-metadata">
+          <div class="step-icon" id="step-icon-metadata"></div>
+          <div class="step-info">
+            <div class="step-label">Metadata</div>
+            <div class="step-status" id="step-status-metadata">Pending</div>
+          </div>
+        </div>
+        <div class="step" id="step-comments">
+          <div class="step-icon" id="step-icon-comments"></div>
+          <div class="step-info">
+            <div class="step-label">Comments</div>
+            <div class="step-status" id="step-status-comments">Pending</div>
+          </div>
+        </div>
+        <div class="step" id="step-liveChat">
+          <div class="step-icon" id="step-icon-liveChat"></div>
+          <div class="step-info">
+            <div class="step-label">Live Chat</div>
+            <div class="step-status" id="step-status-liveChat">Pending</div>
+          </div>
+        </div>
+        <div class="step" id="step-video">
+          <div class="step-icon" id="step-icon-video"></div>
+          <div class="step-info">
+            <div class="step-label">Video</div>
+            <div class="step-status" id="step-status-video">Pending</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="action-buttons">
+        <button id="btn-start-archive" class="btn btn-primary">Start Full Archive</button>
+        <button id="btn-stop-archive" class="btn btn-danger hidden">Stop Archive</button>
+      </div>
+
+      <!-- Individual Step Buttons -->
+      <div class="individual-actions">
+        <button id="btn-fetch-comments" class="btn btn-small btn-secondary hidden">Fetch Comments</button>
+        <button id="btn-fetch-chat" class="btn btn-small btn-secondary hidden">Fetch Live Chat</button>
+        <button id="btn-download-video" class="btn btn-small btn-secondary hidden">Download Video</button>
+      </div>
+
+      <!-- Rate limit / error messages -->
+      <div id="rate-limit-warning" class="info-box warning hidden">
+        <p>Rate limited. Waiting before retrying...</p>
+      </div>
+      <div id="error-message-box" class="info-box error hidden">
+        <p id="error-message-text"></p>
+      </div>
+
+      <!-- Export Section -->
+      <div class="export-section" id="export-section">
+        <h3>Export</h3>
+        <div class="export-checkboxes">
+          <label class="checkbox-option" id="opt-metadata-csv">
+            <input type="checkbox" name="export" value="metadataCSV" checked> Metadata CSV
+          </label>
+          <label class="checkbox-option" id="opt-comments-csv">
+            <input type="checkbox" name="export" value="commentsCSV" checked> Comments CSV
+          </label>
+          <label class="checkbox-option" id="opt-comments-html">
+            <input type="checkbox" name="export" value="commentsHTML" checked> Comments HTML
+          </label>
+          <label class="checkbox-option" id="opt-livechat-csv">
+            <input type="checkbox" name="export" value="liveChatCSV" checked> Live Chat CSV
+          </label>
+          <label class="checkbox-option" id="opt-livechat-html">
+            <input type="checkbox" name="export" value="liveChatHTML" checked> Live Chat HTML
+          </label>
+          <label class="checkbox-option">
+            <input type="checkbox" name="export" value="youtubeClone" checked> YouTube Clone HTML
+          </label>
+        </div>
+        <div class="option-group">
+          <label class="option-label">Theme</label>
+          <div class="radio-group">
+            <label class="radio-option">
+              <input type="radio" name="theme" value="dark" checked> Dark
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="theme" value="light"> Light
+            </label>
+          </div>
+        </div>
+        <button id="btn-download-selected" class="btn btn-primary">Download Selected</button>
+      </div>
+
+      <!-- Re-check -->
+      <button id="btn-recheck" class="btn btn-small btn-secondary">Re-check Page</button>
+    </section>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

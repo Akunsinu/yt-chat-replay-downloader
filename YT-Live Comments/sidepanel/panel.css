@@ -60,42 +60,115 @@ body {
   color: #aaaaaa;
 }
 
-/* Status badges */
-.status-badge {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  align-self: flex-start;
+.video-info .capabilities {
+  font-size: 11px;
+  color: #3ea6ff;
+  margin-top: 6px;
 }
 
-.status-badge.ready {
-  background: #1a3a1a;
+/* Steps */
+.steps-section {
+  background: #272727;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.steps-section h3 {
+  font-size: 12px;
+  color: #aaaaaa;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.step:last-child {
+  border-bottom: none;
+}
+
+.step-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.step-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.step-status {
+  font-size: 11px;
+  color: #aaaaaa;
+}
+
+/* Step states */
+.step-pending .step-icon {
+  color: #666666;
+}
+
+.step-running .step-icon {
+  color: #3ea6ff;
+}
+
+.step-running .step-status {
+  color: #3ea6ff;
+}
+
+.step-complete .step-icon {
   color: #4caf50;
 }
 
-.status-badge.fetching {
-  background: #1a2a3a;
-  color: #42a5f5;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.status-badge.complete {
-  background: #1a3a1a;
+.step-complete .step-status {
   color: #66bb6a;
 }
 
-.status-badge.error {
-  background: #3a1a1a;
+.step-skipped .step-icon {
+  color: #555555;
+}
+
+.step-skipped .step-status {
+  color: #555555;
+}
+
+.step-error .step-icon {
   color: #ef5350;
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+.step-error .step-status {
+  color: #ef5350;
+}
+
+/* Spinner */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #3ea6ff33;
+  border-top-color: #3ea6ff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Buttons */
@@ -134,6 +207,22 @@ body {
   color: #ffffff;
 }
 
+.btn-small {
+  padding: 6px 14px;
+  font-size: 12px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.individual-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* Info boxes */
 .info-box {
   background: #272727;
@@ -162,53 +251,6 @@ body {
   border-left: 3px solid #ef5350;
 }
 
-/* Progress */
-.progress-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.progress-bar {
-  width: 100%;
-  height: 4px;
-  background: #272727;
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: #3ea6ff;
-  border-radius: 2px;
-  transition: width 0.3s ease;
-  width: 0%;
-  /* Indeterminate animation when we don't know total */
-  animation: indeterminate 2s ease-in-out infinite;
-}
-
-@keyframes indeterminate {
-  0% { margin-left: 0; width: 30%; }
-  50% { margin-left: 40%; width: 40%; }
-  100% { margin-left: 0; width: 30%; }
-}
-
-.progress-fill.determinate {
-  animation: none;
-  margin-left: 0;
-}
-
-.progress-stats {
-  font-size: 13px;
-  color: #aaaaaa;
-}
-
-.complete-stats {
-  font-size: 15px;
-  color: #66bb6a;
-  font-weight: 500;
-}
-
 /* Export section */
 .export-section {
   background: #272727;
@@ -220,9 +262,16 @@ body {
 }
 
 .export-section h3 {
-  font-size: 14px;
-  font-weight: 500;
-  margin-bottom: 4px;
+  font-size: 12px;
+  color: #aaaaaa;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.export-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .option-group {
@@ -261,61 +310,12 @@ body {
   background: #3f3f3f;
 }
 
+.checkbox-option.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 input[type="radio"],
 input[type="checkbox"] {
   accent-color: #3ea6ff;
-}
-
-/* Preview */
-.preview-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.preview-section h3 {
-  font-size: 12px;
-  color: #aaaaaa;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.preview-messages {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.preview-msg {
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: #1a1a1a;
-}
-
-.preview-msg .ts {
-  color: #aaaaaa;
-  margin-right: 6px;
-}
-
-.preview-msg .author {
-  color: #3ea6ff;
-  font-weight: 500;
-  margin-right: 4px;
-}
-
-.preview-msg .text {
-  color: #e0e0e0;
-}
-
-.preview-msg.superchat {
-  border-left: 2px solid #ffd600;
-  background: #1a2a1a;
-}
-
-.preview-msg.membership {
-  border-left: 2px solid #2ba640;
-  background: #1a2a1a;
 }

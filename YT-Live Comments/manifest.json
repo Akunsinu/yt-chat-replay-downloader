@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "YouTube Chat Replay Downloader",
-  "description": "Download chat replays from YouTube VOD recordings. Export to CSV or HTML with dark/light themes.",
-  "version": "1.0.0",
-  "permissions": ["storage", "downloads", "sidePanel", "activeTab"],
-  "host_permissions": ["https://www.youtube.com/*"],
+  "name": "YouTube Video Archiver",
+  "description": "Archive YouTube videos with metadata, comments, live chat, and video files. Generates a YouTube-clone HTML viewer.",
+  "version": "2.0.0",
+  "permissions": ["storage", "downloads", "sidePanel", "activeTab", "nativeMessaging"],
+  "host_permissions": ["https://www.youtube.com/*", "https://*.googlevideo.com/*"],
   "background": {
     "service_worker": "background/service-worker.js"
   },
@@ -19,7 +19,7 @@
     }
   ],
   "action": {
-    "default_title": "YouTube Chat Downloader",
+    "default_title": "YouTube Video Archiver",
     "default_icon": {
       "16": "assets/icons/icon16.png",
       "48": "assets/icons/icon48.png",
@@ -30,5 +30,11 @@
     "16": "assets/icons/icon16.png",
     "48": "assets/icons/icon48.png",
     "128": "assets/icons/icon128.png"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["content/page-bridge.js"],
+      "matches": ["https://www.youtube.com/*"]
+    }
+  ]
 }
