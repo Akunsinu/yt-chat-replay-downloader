@@ -21,6 +21,11 @@ let archiveSteps = {
 let nativeDownloadPort = null; // native messaging port for yt-dlp video download
 let isArchiving = false;
 
+// Load html2canvas source for embedding in generated HTML files
+const html2canvasSrcPromise = fetch(chrome.runtime.getURL('lib/html2canvas.min.js'))
+  .then(r => r.text())
+  .catch(e => { console.error('[YT Archiver] Failed to load html2canvas:', e); return ''; });
+
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
@@ -628,11 +633,6 @@ async function startFullArchive() {
     // Comments skipped, move to next step
     continueArchive('comments');
   }
-
-  // Step 4: Start video download in parallel
-  if (archiveSteps.video === 'pending' && currentVideoData?.hasStreams) {
-    downloadVideo();
-  }
 }
 
 async function continueArchive(completedStep) {
@@ -668,6 +668,10 @@ async function continueArchive(completedStep) {
   }
 
   if (completedStep === 'liveChat') {
+    // Start video download after comments+chat are done (so comment count in folder name is accurate)
+    if (archiveSteps.video === 'pending' && currentVideoData?.hasStreams) {
+      downloadVideo();
+    }
     checkArchiveComplete();
   }
 }
@@ -735,7 +739,7 @@ function downloadVideo() {
   archiveSteps.video = 'downloading';
   broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
 
-  const title = sanitizeFilename(currentVideoData?.title || videoId);
+  const prefix = buildFolderPrefix();
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
   try {
@@ -796,8 +800,8 @@ function downloadVideo() {
     port.postMessage({
       action: 'download',
       videoUrl,
-      outputDir: `~/Downloads/YT-Archive/${title}`,
-      title,
+      outputDir: `~/Downloads/YT-Archive/${prefix}`,
+      title: prefix,
       maxQuality: '1080',
     });
 
@@ -819,9 +823,9 @@ function filterMessages(filters) {
   return chatMessages.filter((msg) => filters.includes(msg.message_type));
 }
 
-function archiveFilename(title, suffix) {
-  const safe = sanitizeFilename(title || 'export');
-  return `YT-Archive/${safe}/${safe}_${suffix}`;
+function archiveFilename(suffix) {
+  const prefix = buildFolderPrefix();
+  return `YT-Archive/${prefix}/${prefix}_${suffix}`;
 }
 
 function downloadBlob(content, mimeType, filename) {
@@ -876,7 +880,7 @@ function exportMetadataCSV() {
     }
   }
 
-  const filename = archiveFilename(currentVideoData?.title || currentVideoData?.videoId, 'metadata.csv');
+  const filename = archiveFilename('metadata.csv');
   downloadBlob(csv, 'text/csv;charset=utf-8', filename);
 }
 
@@ -896,7 +900,7 @@ function exportChatCSV(filters) {
     csv += headers.map((h) => escapeCSVField(msg[h])).join(',') + '\n';
   }
 
-  const filename = archiveFilename(currentVideoData?.title || currentVideoData?.videoId, 'live_chat.csv');
+  const filename = archiveFilename('live_chat.csv');
   downloadBlob(csv, 'text/csv;charset=utf-8', filename);
 }
 
@@ -915,7 +919,7 @@ function exportCommentsCSV() {
     csv += headers.map((h) => escapeCSVField(c[h])).join(',') + '\n';
   }
 
-  const filename = archiveFilename(currentVideoData?.title || currentVideoData?.videoId, 'comments.csv');
+  const filename = archiveFilename('comments.csv');
   downloadBlob(csv, 'text/csv;charset=utf-8', filename);
 }
 
@@ -926,25 +930,40 @@ function exportChatHTML(theme = 'dark', filters) {
   const title = currentVideoData?.title || 'Chat Replay';
   const channelName = currentVideoData?.channelName || '';
   const html = generateChatHTML(messages, title, channelName, theme);
-  const filename = archiveFilename(currentVideoData?.title || currentVideoData?.videoId, `live_chat_${theme}.html`);
+  const filename = archiveFilename(`live_chat_${theme}.html`);
   downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
 
 // ─── Comments HTML ───
 
-function exportCommentsHTML(theme = 'dark') {
+async function exportCommentsHTML(theme = 'dark') {
   const title = currentVideoData?.title || 'Comments';
   const channelName = currentVideoData?.channelName || '';
-  const html = generateCommentsHTML(regularComments, title, channelName, theme);
-  const filename = archiveFilename(currentVideoData?.title || currentVideoData?.videoId, `comments_${theme}.html`);
+  const h2cSrc = await html2canvasSrcPromise;
+  const html = generateCommentsHTML(regularComments, title, channelName, theme, h2cSrc);
+  const filename = archiveFilename(`comments_${theme}.html`);
   downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
 
 // ─── YouTube Clone HTML ───
 
-function exportYouTubeClone(theme = 'dark') {
-  const html = generateYouTubeCloneHTML(theme);
-  const filename = archiveFilename(currentVideoData?.title || currentVideoData?.videoId, 'archive.html');
+async function exportYouTubeClone(theme = 'dark') {
+  const h2cSrc = await html2canvasSrcPromise;
+  const html = generateYouTubeCloneHTML(theme, h2cSrc);
+  const filename = archiveFilename('archive.html');
+  downloadBlob(html, 'text/html;charset=utf-8', filename);
+}
+
+// ─── Comment Screenshots HTML ───
+
+async function exportCommentScreenshots(theme = 'dark') {
+  const h2cSrc = await html2canvasSrcPromise;
+  if (!h2cSrc) {
+    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'html2canvas library not available.' } });
+    return;
+  }
+  const html = generateCommentScreenshotsHTML(regularComments, theme, h2cSrc);
+  const filename = archiveFilename(`comment_screenshots_${theme}.html`);
   downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
 
@@ -978,7 +997,7 @@ async function exportAll(theme = 'dark', selected = {}) {
     }
     if (selected.commentsHTML) {
       if (regularComments.length > 0) {
-        exportCommentsHTML(theme);
+        await exportCommentsHTML(theme);
         exportCount++;
       } else {
         skipped.push('Comments HTML (no comments fetched)');
@@ -1001,8 +1020,16 @@ async function exportAll(theme = 'dark', selected = {}) {
       }
     }
     if (selected.youtubeClone) {
-      exportYouTubeClone(theme);
+      await exportYouTubeClone(theme);
       exportCount++;
+    }
+    if (selected.commentScreenshots) {
+      if (regularComments.length > 0) {
+        await exportCommentScreenshots(theme);
+        exportCount++;
+      } else {
+        skipped.push('Comment Screenshots (no comments fetched)');
+      }
     }
   } catch (e) {
     console.error('[YT Archiver] exportAll error:', e);
@@ -1021,6 +1048,31 @@ async function exportAll(theme = 'dark', selected = {}) {
 
 function sanitizeFilename(name) {
   return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, '_').substring(0, 200);
+}
+
+function buildFolderPrefix() {
+  const videoId = currentVideoData?.videoId || 'unknown';
+  const rawTitle = currentVideoData?.title || videoMetadata?.title || videoId;
+  const title = sanitizeFilename(rawTitle).substring(0, 80);
+  const rawUploader = videoMetadata?.author || videoMetadata?.ownerChannelName || currentVideoData?.channelName || 'unknown';
+  const uploader = sanitizeFilename(rawUploader).substring(0, 40);
+
+  // Parse date: publishDate "2024-01-15" → "20240115", fallback to dateText
+  let dateStr = 'unknown';
+  const pd = videoMetadata?.publishDate || videoMetadata?.uploadDate;
+  if (pd) {
+    const match = pd.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (match) dateStr = match[1] + match[2] + match[3];
+  }
+  if (dateStr === 'unknown' && videoMetadata?.dateText) {
+    const dt = new Date(videoMetadata.dateText);
+    if (!isNaN(dt.getTime())) {
+      dateStr = dt.getFullYear() + String(dt.getMonth() + 1).padStart(2, '0') + String(dt.getDate()).padStart(2, '0');
+    }
+  }
+
+  const commentCount = regularComments.length;
+  return `YT_${title}_${videoId}_${uploader}_${dateStr}_${commentCount}`;
 }
 
 // ─── HTML Generators ───
@@ -1317,7 +1369,7 @@ document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
 
 // ─── Comments HTML Generator ───
 
-function generateCommentsHTML(comments, title, channelName, theme) {
+function generateCommentsHTML(comments, title, channelName, theme, h2cSrc) {
   const c = getThemeColors(theme);
   const totalComments = comments.length;
   const topLevel = comments.filter(x => !x.parent_comment_id);
@@ -1409,6 +1461,8 @@ body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor
 .heart-badge{color:#ff0000;font-size:12px}
 .comment-text{font-size:14px;white-space:pre-wrap;word-break:break-word;margin-bottom:4px}
 .comment-actions{font-size:12px;color:${c.secondaryText};display:flex;gap:12px;align-items:center}
+.screenshot-btn{cursor:pointer;opacity:0.5;transition:opacity .2s;background:none;border:none;font-size:14px;padding:2px 4px;color:${c.secondaryText}}
+.screenshot-btn:hover{opacity:1}
 .replies{margin-left:52px;padding-left:0}
 .reply{padding:8px 0;display:flex;gap:10px}
 .reply .avatar{width:24px;height:24px}
@@ -1458,9 +1512,11 @@ body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor
 <div class="analytics-section"><h3>Top 10 Commenters</h3>${topCommentersHTML}</div>
 </div>
 </div>
+${h2cSrc ? '<script>' + h2cSrc + '<\/script>' : ''}
 <script>
 (function(){
 var allComments=${commentsJSON};
+var folderPrefix=${JSON.stringify(buildFolderPrefix())};
 var PAGE_SIZE=100;
 var currentPage=0;
 var filtered=allComments;
@@ -1468,19 +1524,21 @@ var container=document.getElementById('commentsContainer');
 var loadMoreDiv=document.getElementById('loadMore');
 
 function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
 
 function renderComment(cm){
 var badges='';
 if(cm.pin)badges+='<span class="pin-badge">&#128204; Pinned</span>';
 if(cm.heart)badges+='<span class="heart-badge">&#10084;</span>';
 var authorCls=cm.own?'comment-author owner':'comment-author';
-var html='<div class="comment"><div class="comment-main">';
+var html='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'"><div class="comment-main">';
 html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666;border-radius:50%"></div>';
 html+='<div class="comment-body"><div class="comment-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="comment-time">'+escH(cm.time)+'</span>'+badges+'</div>';
 html+='<div class="comment-text">'+escH(cm.t)+'</div>';
 html+='<div class="comment-actions">';
 if(cm.likes>0)html+='<span>&#128077; '+cm.likes+'</span>';
 if(cm.rc>0)html+='<span>'+cm.rc+' replies</span>';
+${h2cSrc ? "html+='<button class=\"screenshot-btn\" title=\"Screenshot comment\" onclick=\"screenshotComment(this)\">&#128247;</button>';" : ''}
 html+='</div></div></div>';
 if(cm.replies&&cm.replies.length>0){
 html+='<div class="replies">';
@@ -1539,6 +1597,28 @@ document.querySelectorAll('.tab-content').forEach(function(tc){tc.classList.remo
 tab.classList.add('active');document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
 });
 });
+
+${h2cSrc ? `
+window.screenshotComment=function(btn){
+var commentEl=btn.closest('.comment');
+if(!commentEl||typeof html2canvas==='undefined')return;
+btn.style.display='none';
+var allBtns=commentEl.querySelectorAll('.screenshot-btn');
+allBtns.forEach(function(b){b.style.display='none';});
+html2canvas(commentEl,{backgroundColor:document.body.style.backgroundColor||'${c.bgColor}',scale:2,useCORS:true}).then(function(canvas){
+allBtns.forEach(function(b){b.style.display='';});
+var author=safeName(commentEl.dataset.author||'comment');
+var cid=commentEl.dataset.commentId||'unknown';
+var link=document.createElement('a');
+link.download=folderPrefix+'_'+author+'_'+cid+'.png';
+link.href=canvas.toDataURL('image/png');
+link.click();
+}).catch(function(e){
+allBtns.forEach(function(b){b.style.display='';});
+console.error('Screenshot failed:',e);
+});
+};
+` : ''}
 })();
 </script>
 </body>
@@ -1547,16 +1627,16 @@ tab.classList.add('active');document.getElementById('tab-'+tab.dataset.tab).clas
 
 // ─── YouTube Clone HTML Generator ───
 
-function generateYouTubeCloneHTML(theme) {
+function generateYouTubeCloneHTML(theme, h2cSrc) {
   const c = getThemeColors(theme);
   const meta = videoMetadata || {};
   const title = meta.title || currentVideoData?.title || 'Video';
   const channel = meta.author || meta.ownerChannelName || currentVideoData?.channelName || '';
   const videoId = meta.videoId || currentVideoData?.videoId || '';
 
-  // Figure out local video filename (must match yt_dlp_host.py output template: title.ext)
-  const safeName = sanitizeFilename(currentVideoData?.title || videoId);
-  const videoFilename = `${safeName}.mp4`;
+  // Figure out local video filename (matches buildFolderPrefix output)
+  const videoPrefix = buildFolderPrefix();
+  const videoFilename = `${videoPrefix}.mp4`;
 
   // Prepare data for embedding
   const metaJSON = JSON.stringify(meta);
@@ -1644,6 +1724,8 @@ a{color:${c.accentColor};text-decoration:none}
 .comment .cm-time{font-size:12px;color:${c.secondaryText}}
 .comment .cm-text{font-size:14px;white-space:pre-wrap;word-break:break-word}
 .comment .cm-actions{font-size:12px;color:${c.secondaryText};margin-top:4px;display:flex;gap:10px}
+.screenshot-btn{cursor:pointer;opacity:0.5;transition:opacity .2s;background:none;border:none;font-size:14px;padding:2px 4px;color:${c.secondaryText}}
+.screenshot-btn:hover{opacity:1}
 .cm-pin{font-size:11px;color:${c.secondaryText}}
 .cm-heart{color:#ff0000;font-size:12px}
 .reply-group{margin-left:52px}
@@ -1760,13 +1842,14 @@ var badges='';
 if(cm.pin)badges+='<span class="cm-pin">&#128204; Pinned</span>';
 if(cm.heart)badges+='<span class="cm-heart">&#10084;</span>';
 var authorCls=cm.own?'cm-author owner':'cm-author';
-html+='<div class="comment">';
+html+='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'">';
 html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666"></div>';
 html+='<div class="body"><div class="cm-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="cm-time">'+escH(cm.time)+'</span>'+badges+'</div>';
 html+='<div class="cm-text">'+escH(cm.t)+'</div>';
 html+='<div class="cm-actions">';
 if(cm.likes>0)html+='<span>&#128077; '+cm.likes+'</span>';
 if(cm.rc>0)html+='<span>'+cm.rc+' replies</span>';
+${h2cSrc ? "html+='<button class=\"screenshot-btn\" title=\"Screenshot comment\" onclick=\"screenshotComment(this)\">&#128247;</button>';" : ''}
 html+='</div></div></div>';
 var reps=repliesByParent[cm.id];
 if(reps&&reps.length>0){
@@ -1795,6 +1878,198 @@ document.getElementById('btnLoadMoreComments').addEventListener('click',renderCo
 }
 })();
 </script>
+${h2cSrc ? '<script>' + h2cSrc + '<\/script>' : ''}
+${h2cSrc ? `<script>
+(function(){
+var folderPrefix=${JSON.stringify(buildFolderPrefix())};
+function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
+window.screenshotComment=function(btn){
+var commentEl=btn.closest('.comment');
+if(!commentEl||typeof html2canvas==='undefined')return;
+var allBtns=commentEl.querySelectorAll('.screenshot-btn');
+allBtns.forEach(function(b){b.style.display='none';});
+html2canvas(commentEl,{backgroundColor:'${c.bgColor}',scale:2,useCORS:true}).then(function(canvas){
+allBtns.forEach(function(b){b.style.display='';});
+var author=safeName(commentEl.dataset.author||'comment');
+var cid=commentEl.dataset.commentId||'unknown';
+var link=document.createElement('a');
+link.download=folderPrefix+'_'+author+'_'+cid+'.png';
+link.href=canvas.toDataURL('image/png');
+link.click();
+}).catch(function(e){
+allBtns.forEach(function(b){b.style.display='';});
+console.error('Screenshot failed:',e);
+});
+};
+})();
+<\/script>` : ''}
+</body>
+</html>`;
+}
+
+// ─── Comment Screenshots Batch HTML Generator ───
+
+function generateCommentScreenshotsHTML(comments, theme, h2cSrc) {
+  const c = getThemeColors(theme);
+  const topLevel = comments.filter(x => !x.parent_comment_id);
+  const repliesByParent = {};
+  for (const r of comments.filter(x => x.parent_comment_id)) {
+    if (!repliesByParent[r.parent_comment_id]) repliesByParent[r.parent_comment_id] = [];
+    repliesByParent[r.parent_comment_id].push(r);
+  }
+
+  const commentsJSON = JSON.stringify(topLevel.map(cm => ({
+    id: cm.comment_id,
+    a: cm.author_display_name,
+    img: cm.author_profile_image,
+    t: cm.text,
+    time: cm.published_time_text,
+    likes: cm.like_count,
+    rc: cm.reply_count,
+    own: cm.is_channel_owner,
+    pin: cm.is_pinned,
+    heart: cm.is_hearted,
+    replies: (repliesByParent[cm.comment_id] || []).map(r => ({
+      id: r.comment_id,
+      a: r.author_display_name,
+      img: r.author_profile_image,
+      t: r.text,
+      time: r.published_time_text,
+      likes: r.like_count,
+      own: r.is_channel_owner,
+      heart: r.is_hearted,
+    })),
+  })));
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Comment Screenshots - Batch Export</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor};color:${c.textColor};line-height:1.4}
+.header{background:${c.headerBg};border-bottom:1px solid ${c.borderColor};padding:16px 20px;position:sticky;top:0;z-index:10}
+.header h1{font-size:18px;font-weight:500;margin-bottom:4px}
+.header .meta{font-size:12px;color:${c.secondaryText}}
+.controls{max-width:800px;margin:16px auto;padding:0 20px;display:flex;gap:12px;align-items:center}
+.btn{padding:10px 24px;border-radius:20px;border:none;cursor:pointer;font-size:14px;font-weight:500}
+.btn-primary{background:${c.accentColor};color:#0f0f0f}
+.btn-primary:disabled{opacity:0.5;cursor:not-allowed}
+.progress-wrap{flex:1;display:none}
+.progress-bar{height:8px;background:${c.borderColor};border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;background:${c.accentColor};border-radius:4px;transition:width 0.2s;width:0%}
+.progress-text{font-size:12px;color:${c.secondaryText};margin-top:4px}
+.render-area{position:absolute;left:-9999px;top:0;width:600px}
+.comment{padding:12px 16px;background:${c.bgColor};border-bottom:1px solid ${c.borderColor}}
+.comment-main{display:flex;gap:12px}
+.comment .avatar{width:40px;height:40px;border-radius:50%;flex-shrink:0}
+.comment-body{flex:1;min-width:0}
+.comment-header{display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap}
+.comment-author{font-size:13px;font-weight:500}
+.comment-author.owner{background:${c.isDark?'#272727':'#f0f0f0'};padding:1px 6px;border-radius:12px}
+.comment-time{font-size:12px;color:${c.secondaryText}}
+.pin-badge{font-size:11px;color:${c.secondaryText}}
+.heart-badge{color:#ff0000;font-size:12px}
+.comment-text{font-size:14px;white-space:pre-wrap;word-break:break-word;margin-bottom:4px}
+.comment-actions{font-size:12px;color:${c.secondaryText};display:flex;gap:12px;align-items:center}
+.replies{margin-left:52px;padding-left:0}
+.reply{padding:8px 0;display:flex;gap:10px}
+.reply .avatar{width:24px;height:24px;border-radius:50%}
+.reply .comment-body{flex:1}
+.reply .comment-text{font-size:13px}
+</style>
+</head>
+<body>
+<div class="header">
+<h1>Comment Screenshots - Batch Export</h1>
+<div class="meta">${topLevel.length} top-level comments to render</div>
+</div>
+<div class="controls">
+<button class="btn btn-primary" id="btnDownloadAll">Download All Screenshots</button>
+<div class="progress-wrap" id="progressWrap">
+<div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+<div class="progress-text" id="progressText">0 / ${topLevel.length}</div>
+</div>
+</div>
+<div class="render-area" id="renderArea"></div>
+<script>${h2cSrc}<\/script>
+<script>
+(function(){
+var allComments=${commentsJSON};
+var folderPrefix=${JSON.stringify(buildFolderPrefix())};
+var renderArea=document.getElementById('renderArea');
+
+function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
+
+function buildCommentHTML(cm){
+var badges='';
+if(cm.pin)badges+='<span class="pin-badge">&#128204; Pinned</span>';
+if(cm.heart)badges+='<span class="heart-badge">&#10084;</span>';
+var authorCls=cm.own?'comment-author owner':'comment-author';
+var html='<div class="comment"><div class="comment-main">';
+html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" crossorigin="anonymous" />':'<div class="avatar" style="background:#666;border-radius:50%"></div>';
+html+='<div class="comment-body"><div class="comment-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="comment-time">'+escH(cm.time)+'</span>'+badges+'</div>';
+html+='<div class="comment-text">'+escH(cm.t)+'</div>';
+html+='<div class="comment-actions">';
+if(cm.likes>0)html+='<span>&#128077; '+cm.likes+'</span>';
+if(cm.rc>0)html+='<span>'+cm.rc+' replies</span>';
+html+='</div></div></div>';
+if(cm.replies&&cm.replies.length>0){
+html+='<div class="replies">';
+for(var i=0;i<cm.replies.length;i++){
+var r=cm.replies[i];
+var rBadges=r.heart?'<span class="heart-badge">&#10084;</span>':'';
+var rAuthorCls=r.own?'comment-author owner':'comment-author';
+html+='<div class="reply">';
+html+=r.img?'<img class="avatar" src="'+escH(r.img)+'" alt="" crossorigin="anonymous" />':'<div class="avatar" style="background:#666;border-radius:50%;width:24px;height:24px"></div>';
+html+='<div class="comment-body"><div class="comment-header"><span class="'+rAuthorCls+'">'+escH(r.a)+'</span><span class="comment-time">'+escH(r.time)+'</span>'+rBadges+'</div>';
+html+='<div class="comment-text">'+escH(r.t)+'</div>';
+if(r.likes>0)html+='<div class="comment-actions"><span>&#128077; '+r.likes+'</span></div>';
+html+='</div></div>';
+}
+html+='</div>';
+}
+html+='</div>';
+return html;
+}
+
+function delay(ms){return new Promise(function(r){setTimeout(r,ms)})}
+
+document.getElementById('btnDownloadAll').addEventListener('click',async function(){
+var btn=this;
+btn.disabled=true;
+var progressWrap=document.getElementById('progressWrap');
+var progressFill=document.getElementById('progressFill');
+var progressText=document.getElementById('progressText');
+progressWrap.style.display='block';
+
+for(var i=0;i<allComments.length;i++){
+var cm=allComments[i];
+renderArea.innerHTML=buildCommentHTML(cm);
+await delay(100);
+try{
+var commentEl=renderArea.querySelector('.comment');
+var canvas=await html2canvas(commentEl,{backgroundColor:'${c.bgColor}',scale:2,useCORS:true,width:600});
+var author=safeName(cm.a||'comment');
+var cid=cm.id||'unknown';
+var link=document.createElement('a');
+link.download=folderPrefix+'_'+author+'_'+cid+'.png';
+link.href=canvas.toDataURL('image/png');
+link.click();
+}catch(e){console.error('Screenshot failed for comment',cm.id,e);}
+var pct=Math.round(((i+1)/allComments.length)*100);
+progressFill.style.width=pct+'%';
+progressText.textContent=(i+1)+' / '+allComments.length;
+await delay(200);
+}
+btn.disabled=false;
+progressText.textContent='Done! '+allComments.length+' screenshots downloaded.';
+});
+})();
+<\/script>
 </body>
 </html>`;
 }

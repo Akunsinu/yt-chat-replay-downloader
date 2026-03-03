@@ -153,6 +153,7 @@ function updateExportOptions() {
   const metaOpt = document.getElementById('opt-metadata-csv');
   const commentsCSV = document.getElementById('opt-comments-csv');
   const commentsHTML = document.getElementById('opt-comments-html');
+  const commentScreenshots = document.getElementById('opt-comment-screenshots');
   const chatCSV = document.getElementById('opt-livechat-csv');
   const chatHTML = document.getElementById('opt-livechat-html');
 
@@ -163,6 +164,7 @@ function updateExportOptions() {
   toggleExportOption(metaOpt, hasMetadata);
   toggleExportOption(commentsCSV, hasComments);
   toggleExportOption(commentsHTML, hasComments);
+  toggleExportOption(commentScreenshots, hasComments);
   toggleExportOption(chatCSV, hasChat);
   toggleExportOption(chatHTML, hasChat);
 }
