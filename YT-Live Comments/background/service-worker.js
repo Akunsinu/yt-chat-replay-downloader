@@ -1140,7 +1140,7 @@ async function exportAll(theme = 'dark', selected = {}) {
 }
 
 function sanitizeFilename(name) {
-  return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, '_').substring(0, 200);
+  return name.replace(/[<>:"/\\|?*'`!\x00-\x1f]/g, '_').replace(/\s+/g, '_').substring(0, 200);
 }
 
 function buildFolderPrefix() {
