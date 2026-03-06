@@ -930,11 +930,12 @@ function exportCommentsCSV() {
 
 // ─── Chat HTML (existing, refactored) ───
 
-function exportChatHTML(theme = 'dark', filters) {
+async function exportChatHTML(theme = 'dark', filters) {
   const messages = filterMessages(filters);
   const title = currentVideoData?.title || 'Chat Replay';
   const channelName = currentVideoData?.channelName || '';
-  const html = generateChatHTML(messages, title, channelName, theme);
+  const h2cSrc = await html2canvasSrcPromise;
+  const html = generateChatHTML(messages, title, channelName, theme, h2cSrc);
   const filename = archiveFilename(`live_chat_${theme}.html`);
   downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
@@ -962,14 +963,14 @@ async function exportYouTubeClone(theme = 'dark') {
 // ─── Comment Screenshots (via offscreen document → zip) ───
 
 async function exportCommentScreenshots(theme = 'dark') {
-  if (regularComments.length === 0) {
-    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'No comments to screenshot.' } });
+  if (regularComments.length === 0 && chatMessages.length === 0) {
+    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'No comments or chat messages to screenshot.' } });
     return;
   }
 
   const prefix = buildFolderPrefix();
 
-  // Build comment threads for rendering
+  // Build regular comment threads for rendering
   const topLevel = regularComments.filter(x => !x.parent_comment_id);
   const repliesByParent = {};
   for (const r of regularComments.filter(x => x.parent_comment_id)) {
@@ -999,6 +1000,21 @@ async function exportCommentScreenshots(theme = 'dark') {
     })),
   }));
 
+  // Build live chat messages for rendering
+  const chat = chatMessages.map(m => ({
+    id: String(m.timestamp_ms || ''),
+    ts: m.timestamp_text,
+    a: m.author_name,
+    m: m.message,
+    t: m.message_type,
+    o: m.is_owner,
+    mod: m.is_moderator,
+    mem: m.is_member,
+    v: m.is_verified,
+    sc: m.superchat_amount,
+    img: m.author_profile_image,
+  }));
+
   // Create offscreen document
   try {
     await chrome.offscreen.createDocument({
@@ -1017,7 +1033,7 @@ async function exportCommentScreenshots(theme = 'dark') {
   try {
     const result = await chrome.runtime.sendMessage({
       type: 'RENDER_COMMENT_SCREENSHOTS',
-      data: { comments, theme, folderPrefix: prefix },
+      data: { comments, chat, theme, folderPrefix: prefix },
     });
 
     if (result?.error) {
@@ -1090,7 +1106,7 @@ async function exportAll(theme = 'dark', selected = {}) {
     }
     if (selected.liveChatHTML) {
       if (chatMessages.length > 0) {
-        exportChatHTML(theme, []);
+        await exportChatHTML(theme, []);
         exportCount++;
       } else {
         skipped.push('Live Chat HTML (no chat messages)');
@@ -1101,11 +1117,11 @@ async function exportAll(theme = 'dark', selected = {}) {
       exportCount++;
     }
     if (selected.commentScreenshots) {
-      if (regularComments.length > 0) {
+      if (regularComments.length > 0 || chatMessages.length > 0) {
         await exportCommentScreenshots(theme);
         exportCount++;
       } else {
-        skipped.push('Comment Screenshots (no comments fetched)');
+        skipped.push('Screenshots (no comments or chat messages)');
       }
     }
   } catch (e) {
@@ -1176,7 +1192,7 @@ function getThemeColors(theme) {
   };
 }
 
-function generateChatHTML(messages, title, channelName, theme) {
+function generateChatHTML(messages, title, channelName, theme, h2cSrc) {
   const c = getThemeColors(theme);
   const totalMessages = messages.length;
   const typeCounts = { text: 0, superchat: 0, membership: 0, supersticker: 0 };
@@ -1230,6 +1246,7 @@ function generateChatHTML(messages, title, channelName, theme) {
 
   // Build messages as JSON for pagination
   const messagesJSON = JSON.stringify(messages.map(msg => ({
+    id: String(msg.timestamp_ms || ''),
     ts: msg.timestamp_text,
     a: msg.author_name,
     m: msg.message,
@@ -1315,6 +1332,8 @@ body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor
 .tl-bar-wrap:hover .tl-bar{opacity:.7}
 .tl-label{font-size:9px;color:${c.secondaryText};position:absolute;bottom:-16px;white-space:nowrap;display:none}
 .tl-bar-wrap:nth-child(6n+1) .tl-label{display:block}
+.screenshot-btn{cursor:pointer;opacity:0.5;transition:opacity .2s;background:none;border:none;font-size:14px;padding:2px 4px;color:${c.secondaryText};margin-left:auto}
+.screenshot-btn:hover{opacity:1}
 .load-more{text-align:center;padding:16px}
 .load-more button{padding:8px 24px;border-radius:20px;border:1px solid ${c.borderColor};background:${c.inputBg};color:${c.textColor};cursor:pointer;font-size:13px}
 </style>
@@ -1364,6 +1383,7 @@ body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor
 <script>
 (function(){
 var allMessages=${messagesJSON};
+var totalMessages=allMessages.length;
 var PAGE_SIZE=500;
 var currentPage=0;
 var filtered=allMessages;
@@ -1373,8 +1393,10 @@ var container=document.getElementById('messagesContainer');
 var loadMoreDiv=document.getElementById('loadMore');
 
 function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
+function pad4(n){return String(n).padStart(4,'0')}
 
-function renderMessage(msg){
+function renderMessage(msg,idx){
 var nameColor='${c.textColor}';
 var badges='';
 if(msg.o){nameColor='${c.isDark?"#ffd600":"#c69000"}';badges+='<span class="badge owner">Owner</span>';}
@@ -1386,7 +1408,8 @@ if(msg.t==='superchat'){cls+=' superchat';scHeader='<div class="superchat-amount
 else if(msg.t==='membership'){cls+=' membership';}
 else if(msg.t==='supersticker'){cls+=' supersticker';scHeader='<div class="superchat-amount">'+escH(msg.sc)+'</div>';}
 var img=msg.img?'<img class="avatar" src="'+escH(msg.img)+'" alt="" loading="lazy" />':'<div class="avatar-placeholder"></div>';
-return '<div class="'+cls+'">'+scHeader+'<div class="message-body">'+img+'<div class="message-content"><span class="timestamp">'+escH(msg.ts)+'</span><span class="author" style="color:'+nameColor+'">'+escH(msg.a)+'</span>'+badges+'<span class="text">'+escH(msg.m)+'</span></div></div></div>';
+var ssBtn=${h2cSrc ? "'<button class=\"screenshot-btn\" title=\"Screenshot\" onclick=\"screenshotChat(this)\">&#128247;</button>'" : "''"};
+return '<div class="'+cls+'" data-msg-id="'+escH(msg.id)+'" data-author="'+escH(msg.a)+'" data-idx="'+idx+'">'+scHeader+'<div class="message-body">'+img+'<div class="message-content"><span class="timestamp">'+escH(msg.ts)+'</span><span class="author" style="color:'+nameColor+'">'+escH(msg.a)+'</span>'+badges+'<span class="text">'+escH(msg.m)+'</span>'+ssBtn+'</div></div></div>';
 }
 
 function applyFilters(){
@@ -1412,7 +1435,7 @@ function renderPage(){
 var start=currentPage*PAGE_SIZE;
 var end=Math.min(start+PAGE_SIZE,filtered.length);
 var html='';
-for(var i=start;i<end;i++){html+=renderMessage(filtered[i]);}
+for(var i=start;i<end;i++){html+=renderMessage(filtered[i],i);}
 container.insertAdjacentHTML('beforeend',html);
 currentPage++;
 loadMoreDiv.style.display=end<filtered.length?'block':'none';
@@ -1438,8 +1461,30 @@ tab.classList.add('active');
 document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
 });
 });
+${h2cSrc ? `
+window.screenshotChat=function(btn){
+var msgEl=btn.closest('.message');
+if(!msgEl||typeof html2canvas==='undefined')return;
+var allBtns=msgEl.querySelectorAll('.screenshot-btn');
+allBtns.forEach(function(b){b.style.display='none';});
+html2canvas(msgEl,{backgroundColor:'${c.bgColor}',scale:2,useCORS:true}).then(function(canvas){
+allBtns.forEach(function(b){b.style.display='';});
+var author=safeName(msgEl.dataset.author||'chat');
+var mid=msgEl.dataset.msgId||'unknown';
+var idx=parseInt(msgEl.dataset.idx||'0',10);
+var link=document.createElement('a');
+link.download=author+'_YT_Live_Chat_'+pad4(idx+1)+'-'+pad4(totalMessages)+'_'+mid+'.png';
+link.href=canvas.toDataURL('image/png');
+link.click();
+}).catch(function(e){
+allBtns.forEach(function(b){b.style.display='';});
+console.error('Screenshot failed:',e);
+});
+};
+` : ''}
 })();
 </script>
+${h2cSrc ? '<script>' + h2cSrc + '<\/script>' : ''}
 </body>
 </html>`;
 }
@@ -1593,7 +1638,7 @@ ${h2cSrc ? '<script>' + h2cSrc + '<\/script>' : ''}
 <script>
 (function(){
 var allComments=${commentsJSON};
-var folderPrefix=${JSON.stringify(buildFolderPrefix())};
+var totalComments=allComments.length;
 var PAGE_SIZE=100;
 var currentPage=0;
 var filtered=allComments;
@@ -1602,13 +1647,14 @@ var loadMoreDiv=document.getElementById('loadMore');
 
 function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
+function pad4(n){return String(n).padStart(4,'0')}
 
-function renderComment(cm){
+function renderComment(cm,idx){
 var badges='';
 if(cm.pin)badges+='<span class="pin-badge">&#128204; Pinned</span>';
 if(cm.heart)badges+='<span class="heart-badge">&#10084;</span>';
 var authorCls=cm.own?'comment-author owner':'comment-author';
-var html='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'"><div class="comment-main">';
+var html='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'" data-idx="'+idx+'"><div class="comment-main">';
 html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666;border-radius:50%"></div>';
 html+='<div class="comment-body"><div class="comment-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="comment-time">'+escH(cm.time)+'</span>'+badges+'</div>';
 html+='<div class="comment-text">'+escH(cm.t)+'</div>';
@@ -1640,7 +1686,7 @@ function renderPage(){
 var start=currentPage*PAGE_SIZE;
 var end=Math.min(start+PAGE_SIZE,filtered.length);
 var html='';
-for(var i=start;i<end;i++)html+=renderComment(filtered[i]);
+for(var i=start;i<end;i++)html+=renderComment(filtered[i],i);
 container.insertAdjacentHTML('beforeend',html);
 currentPage++;
 loadMoreDiv.style.display=end<filtered.length?'block':'none';
@@ -1679,15 +1725,15 @@ ${h2cSrc ? `
 window.screenshotComment=function(btn){
 var commentEl=btn.closest('.comment');
 if(!commentEl||typeof html2canvas==='undefined')return;
-btn.style.display='none';
 var allBtns=commentEl.querySelectorAll('.screenshot-btn');
 allBtns.forEach(function(b){b.style.display='none';});
 html2canvas(commentEl,{backgroundColor:document.body.style.backgroundColor||'${c.bgColor}',scale:2,useCORS:true}).then(function(canvas){
 allBtns.forEach(function(b){b.style.display='';});
 var author=safeName(commentEl.dataset.author||'comment');
 var cid=commentEl.dataset.commentId||'unknown';
+var idx=parseInt(commentEl.dataset.idx||'0',10);
 var link=document.createElement('a');
-link.download=folderPrefix+'_'+author+'_'+cid+'.png';
+link.download=author+'_YT_RC_'+pad4(idx+1)+'-'+pad4(totalComments)+'_'+cid+'.png';
 link.href=canvas.toDataURL('image/png');
 link.click();
 }).catch(function(e){
@@ -1919,7 +1965,7 @@ var badges='';
 if(cm.pin)badges+='<span class="cm-pin">&#128204; Pinned</span>';
 if(cm.heart)badges+='<span class="cm-heart">&#10084;</span>';
 var authorCls=cm.own?'cm-author owner':'cm-author';
-html+='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'">';
+html+='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'" data-idx="'+i+'" data-total="'+topLevel.length+'">';
 html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666"></div>';
 html+='<div class="body"><div class="cm-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="cm-time">'+escH(cm.time)+'</span>'+badges+'</div>';
 html+='<div class="cm-text">'+escH(cm.t)+'</div>';
@@ -1958,8 +2004,8 @@ document.getElementById('btnLoadMoreComments').addEventListener('click',renderCo
 ${h2cSrc ? '<script>' + h2cSrc + '<\/script>' : ''}
 ${h2cSrc ? `<script>
 (function(){
-var folderPrefix=${JSON.stringify(buildFolderPrefix())};
 function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
+function pad4(n){return String(n).padStart(4,'0')}
 window.screenshotComment=function(btn){
 var commentEl=btn.closest('.comment');
 if(!commentEl||typeof html2canvas==='undefined')return;
@@ -1969,8 +2015,10 @@ html2canvas(commentEl,{backgroundColor:'${c.bgColor}',scale:2,useCORS:true}).the
 allBtns.forEach(function(b){b.style.display='';});
 var author=safeName(commentEl.dataset.author||'comment');
 var cid=commentEl.dataset.commentId||'unknown';
+var idx=parseInt(commentEl.dataset.idx||'0',10);
+var total=parseInt(commentEl.dataset.total||'0',10);
 var link=document.createElement('a');
-link.download=folderPrefix+'_'+author+'_'+cid+'.png';
+link.download=author+'_YT_RC_'+pad4(idx+1)+'-'+pad4(total)+'_'+cid+'.png';
 link.href=canvas.toDataURL('image/png');
 link.click();
 }).catch(function(e){

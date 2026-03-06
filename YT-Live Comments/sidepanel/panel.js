@@ -164,7 +164,7 @@ function updateExportOptions() {
   toggleExportOption(metaOpt, hasMetadata);
   toggleExportOption(commentsCSV, hasComments);
   toggleExportOption(commentsHTML, hasComments);
-  toggleExportOption(commentScreenshots, hasComments);
+  toggleExportOption(commentScreenshots, hasComments || hasChat);
   toggleExportOption(chatCSV, hasChat);
   toggleExportOption(chatHTML, hasChat);
 }
