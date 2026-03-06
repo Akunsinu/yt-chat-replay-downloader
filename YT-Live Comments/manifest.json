@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouTube Video Archiver",
   "description": "Archive YouTube videos with metadata, comments, live chat, and video files. Generates a YouTube-clone HTML viewer.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "permissions": ["storage", "downloads", "sidePanel", "activeTab", "nativeMessaging", "offscreen"],
   "host_permissions": ["https://www.youtube.com/*", "https://*.googlevideo.com/*"],
   "background": {
