@@ -536,6 +536,11 @@ async function handleMessage(message, sender, sendResponse) {
       sendResponse({ status: 'ok' });
       break;
 
+    case 'SCREENSHOT_PROGRESS':
+      broadcastToSidePanel(message);
+      sendResponse({ status: 'ok' });
+      break;
+
     default:
       break;
   }
@@ -954,17 +959,89 @@ async function exportYouTubeClone(theme = 'dark') {
   downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
 
-// ─── Comment Screenshots HTML ───
+// ─── Comment Screenshots (via offscreen document → zip) ───
 
 async function exportCommentScreenshots(theme = 'dark') {
-  const h2cSrc = await html2canvasSrcPromise;
-  if (!h2cSrc) {
-    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'html2canvas library not available.' } });
+  if (regularComments.length === 0) {
+    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'No comments to screenshot.' } });
     return;
   }
-  const html = generateCommentScreenshotsHTML(regularComments, theme, h2cSrc);
-  const filename = archiveFilename(`comment_screenshots_${theme}.html`);
-  downloadBlob(html, 'text/html;charset=utf-8', filename);
+
+  const prefix = buildFolderPrefix();
+
+  // Build comment threads for rendering
+  const topLevel = regularComments.filter(x => !x.parent_comment_id);
+  const repliesByParent = {};
+  for (const r of regularComments.filter(x => x.parent_comment_id)) {
+    if (!repliesByParent[r.parent_comment_id]) repliesByParent[r.parent_comment_id] = [];
+    repliesByParent[r.parent_comment_id].push(r);
+  }
+  const comments = topLevel.map(cm => ({
+    id: cm.comment_id,
+    a: cm.author_display_name,
+    img: cm.author_profile_image,
+    t: cm.text,
+    time: cm.published_time_text,
+    likes: cm.like_count,
+    rc: cm.reply_count,
+    own: cm.is_channel_owner,
+    pin: cm.is_pinned,
+    heart: cm.is_hearted,
+    replies: (repliesByParent[cm.comment_id] || []).map(r => ({
+      id: r.comment_id,
+      a: r.author_display_name,
+      img: r.author_profile_image,
+      t: r.text,
+      time: r.published_time_text,
+      likes: r.like_count,
+      own: r.is_channel_owner,
+      heart: r.is_hearted,
+    })),
+  }));
+
+  // Create offscreen document
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen/offscreen.html',
+      reasons: ['DOM_PARSER'],
+      justification: 'Render comment screenshots with html2canvas',
+    });
+  } catch (e) {
+    // Already exists — that's fine
+    if (!e.message?.includes('already exists')) {
+      broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'Failed to create offscreen document: ' + e.message } });
+      return;
+    }
+  }
+
+  try {
+    const result = await chrome.runtime.sendMessage({
+      type: 'RENDER_COMMENT_SCREENSHOTS',
+      data: { comments, theme, folderPrefix: prefix },
+    });
+
+    if (result?.error) {
+      broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'Screenshot rendering failed: ' + result.error } });
+      return;
+    }
+
+    if (result?.base64) {
+      const filename = archiveFilename('comment_screenshots.zip');
+      const dataUrl = 'data:application/zip;base64,' + result.base64;
+      chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, (downloadId) => {
+        if (chrome.runtime.lastError) {
+          console.error('[YT Archiver] Screenshot zip download failed:', chrome.runtime.lastError.message);
+        } else {
+          console.log('[YT Archiver] Screenshot zip downloaded:', downloadId, filename);
+        }
+      });
+    }
+  } catch (e) {
+    console.error('[YT Archiver] exportCommentScreenshots error:', e);
+    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'Screenshot export failed: ' + e.message } });
+  } finally {
+    chrome.offscreen.closeDocument().catch(() => {});
+  }
 }
 
 // ─── Export All ───
@@ -1907,169 +1984,3 @@ console.error('Screenshot failed:',e);
 </html>`;
 }
 
-// ─── Comment Screenshots Batch HTML Generator ───
-
-function generateCommentScreenshotsHTML(comments, theme, h2cSrc) {
-  const c = getThemeColors(theme);
-  const topLevel = comments.filter(x => !x.parent_comment_id);
-  const repliesByParent = {};
-  for (const r of comments.filter(x => x.parent_comment_id)) {
-    if (!repliesByParent[r.parent_comment_id]) repliesByParent[r.parent_comment_id] = [];
-    repliesByParent[r.parent_comment_id].push(r);
-  }
-
-  const commentsJSON = JSON.stringify(topLevel.map(cm => ({
-    id: cm.comment_id,
-    a: cm.author_display_name,
-    img: cm.author_profile_image,
-    t: cm.text,
-    time: cm.published_time_text,
-    likes: cm.like_count,
-    rc: cm.reply_count,
-    own: cm.is_channel_owner,
-    pin: cm.is_pinned,
-    heart: cm.is_hearted,
-    replies: (repliesByParent[cm.comment_id] || []).map(r => ({
-      id: r.comment_id,
-      a: r.author_display_name,
-      img: r.author_profile_image,
-      t: r.text,
-      time: r.published_time_text,
-      likes: r.like_count,
-      own: r.is_channel_owner,
-      heart: r.is_hearted,
-    })),
-  })));
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Comment Screenshots - Batch Export</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor};color:${c.textColor};line-height:1.4}
-.header{background:${c.headerBg};border-bottom:1px solid ${c.borderColor};padding:16px 20px;position:sticky;top:0;z-index:10}
-.header h1{font-size:18px;font-weight:500;margin-bottom:4px}
-.header .meta{font-size:12px;color:${c.secondaryText}}
-.controls{max-width:800px;margin:16px auto;padding:0 20px;display:flex;gap:12px;align-items:center}
-.btn{padding:10px 24px;border-radius:20px;border:none;cursor:pointer;font-size:14px;font-weight:500}
-.btn-primary{background:${c.accentColor};color:#0f0f0f}
-.btn-primary:disabled{opacity:0.5;cursor:not-allowed}
-.progress-wrap{flex:1;display:none}
-.progress-bar{height:8px;background:${c.borderColor};border-radius:4px;overflow:hidden}
-.progress-fill{height:100%;background:${c.accentColor};border-radius:4px;transition:width 0.2s;width:0%}
-.progress-text{font-size:12px;color:${c.secondaryText};margin-top:4px}
-.render-area{position:absolute;left:-9999px;top:0;width:600px}
-.comment{padding:12px 16px;background:${c.bgColor};border-bottom:1px solid ${c.borderColor}}
-.comment-main{display:flex;gap:12px}
-.comment .avatar{width:40px;height:40px;border-radius:50%;flex-shrink:0}
-.comment-body{flex:1;min-width:0}
-.comment-header{display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap}
-.comment-author{font-size:13px;font-weight:500}
-.comment-author.owner{background:${c.isDark?'#272727':'#f0f0f0'};padding:1px 6px;border-radius:12px}
-.comment-time{font-size:12px;color:${c.secondaryText}}
-.pin-badge{font-size:11px;color:${c.secondaryText}}
-.heart-badge{color:#ff0000;font-size:12px}
-.comment-text{font-size:14px;white-space:pre-wrap;word-break:break-word;margin-bottom:4px}
-.comment-actions{font-size:12px;color:${c.secondaryText};display:flex;gap:12px;align-items:center}
-.replies{margin-left:52px;padding-left:0}
-.reply{padding:8px 0;display:flex;gap:10px}
-.reply .avatar{width:24px;height:24px;border-radius:50%}
-.reply .comment-body{flex:1}
-.reply .comment-text{font-size:13px}
-</style>
-</head>
-<body>
-<div class="header">
-<h1>Comment Screenshots - Batch Export</h1>
-<div class="meta">${topLevel.length} top-level comments to render</div>
-</div>
-<div class="controls">
-<button class="btn btn-primary" id="btnDownloadAll">Download All Screenshots</button>
-<div class="progress-wrap" id="progressWrap">
-<div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-<div class="progress-text" id="progressText">0 / ${topLevel.length}</div>
-</div>
-</div>
-<div class="render-area" id="renderArea"></div>
-<script>${h2cSrc}<\/script>
-<script>
-(function(){
-var allComments=${commentsJSON};
-var folderPrefix=${JSON.stringify(buildFolderPrefix())};
-var renderArea=document.getElementById('renderArea');
-
-function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
-function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
-
-function buildCommentHTML(cm){
-var badges='';
-if(cm.pin)badges+='<span class="pin-badge">&#128204; Pinned</span>';
-if(cm.heart)badges+='<span class="heart-badge">&#10084;</span>';
-var authorCls=cm.own?'comment-author owner':'comment-author';
-var html='<div class="comment"><div class="comment-main">';
-html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" crossorigin="anonymous" />':'<div class="avatar" style="background:#666;border-radius:50%"></div>';
-html+='<div class="comment-body"><div class="comment-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="comment-time">'+escH(cm.time)+'</span>'+badges+'</div>';
-html+='<div class="comment-text">'+escH(cm.t)+'</div>';
-html+='<div class="comment-actions">';
-if(cm.likes>0)html+='<span>&#128077; '+cm.likes+'</span>';
-if(cm.rc>0)html+='<span>'+cm.rc+' replies</span>';
-html+='</div></div></div>';
-if(cm.replies&&cm.replies.length>0){
-html+='<div class="replies">';
-for(var i=0;i<cm.replies.length;i++){
-var r=cm.replies[i];
-var rBadges=r.heart?'<span class="heart-badge">&#10084;</span>':'';
-var rAuthorCls=r.own?'comment-author owner':'comment-author';
-html+='<div class="reply">';
-html+=r.img?'<img class="avatar" src="'+escH(r.img)+'" alt="" crossorigin="anonymous" />':'<div class="avatar" style="background:#666;border-radius:50%;width:24px;height:24px"></div>';
-html+='<div class="comment-body"><div class="comment-header"><span class="'+rAuthorCls+'">'+escH(r.a)+'</span><span class="comment-time">'+escH(r.time)+'</span>'+rBadges+'</div>';
-html+='<div class="comment-text">'+escH(r.t)+'</div>';
-if(r.likes>0)html+='<div class="comment-actions"><span>&#128077; '+r.likes+'</span></div>';
-html+='</div></div>';
-}
-html+='</div>';
-}
-html+='</div>';
-return html;
-}
-
-function delay(ms){return new Promise(function(r){setTimeout(r,ms)})}
-
-document.getElementById('btnDownloadAll').addEventListener('click',async function(){
-var btn=this;
-btn.disabled=true;
-var progressWrap=document.getElementById('progressWrap');
-var progressFill=document.getElementById('progressFill');
-var progressText=document.getElementById('progressText');
-progressWrap.style.display='block';
-
-for(var i=0;i<allComments.length;i++){
-var cm=allComments[i];
-renderArea.innerHTML=buildCommentHTML(cm);
-await delay(100);
-try{
-var commentEl=renderArea.querySelector('.comment');
-var canvas=await html2canvas(commentEl,{backgroundColor:'${c.bgColor}',scale:2,useCORS:true,width:600});
-var author=safeName(cm.a||'comment');
-var cid=cm.id||'unknown';
-var link=document.createElement('a');
-link.download=folderPrefix+'_'+author+'_'+cid+'.png';
-link.href=canvas.toDataURL('image/png');
-link.click();
-}catch(e){console.error('Screenshot failed for comment',cm.id,e);}
-var pct=Math.round(((i+1)/allComments.length)*100);
-progressFill.style.width=pct+'%';
-progressText.textContent=(i+1)+' / '+allComments.length;
-await delay(200);
-}
-btn.disabled=false;
-progressText.textContent='Done! '+allComments.length+' screenshots downloaded.';
-});
-})();
-<\/script>
-</body>
-</html>`;
-}
