@@ -9,51 +9,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function renderAndZip({ comments, chat, theme, folderPrefix }) {
+async function renderAndZip({ comments, chat, theme, folderPrefix, dateStr }) {
   const c = getThemeColors(theme);
   const renderArea = document.getElementById('renderArea');
   renderArea.style.background = c.bgColor;
   renderArea.style.color = c.textColor;
-  renderArea.style.fontFamily = "'Roboto','YouTube Sans',Arial,sans-serif";
-  renderArea.style.lineHeight = '1.4';
+  renderArea.style.fontFamily = "'Roboto','YouTube Sans','Arial',sans-serif";
+  renderArea.style.lineHeight = '1.6';
+  renderArea.style.fontSize = '14px';
 
-  // Inject styles for both comments and chat
   const style = document.createElement('style');
-  style.textContent = `
-    /* Regular comment styles */
-    .comment{padding:12px 16px;background:${c.bgColor};border-bottom:1px solid ${c.borderColor}}
-    .comment-main{display:flex;gap:12px}
-    .comment .avatar{width:40px;height:40px;border-radius:50%;flex-shrink:0}
-    .comment-body{flex:1;min-width:0}
-    .comment-header{display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap}
-    .comment-author{font-size:13px;font-weight:500;color:${c.textColor}}
-    .comment-author.owner{background:${c.isDark?'#272727':'#f0f0f0'};padding:1px 6px;border-radius:12px}
-    .comment-time{font-size:12px;color:${c.secondaryText}}
-    .pin-badge{font-size:11px;color:${c.secondaryText}}
-    .heart-badge{color:#ff0000;font-size:12px}
-    .comment-text{font-size:14px;white-space:pre-wrap;word-break:break-word;margin-bottom:4px;color:${c.textColor}}
-    .comment-actions{font-size:12px;color:${c.secondaryText};display:flex;gap:12px;align-items:center}
-    .replies{margin-left:52px;padding-left:0}
-    .reply{padding:8px 0;display:flex;gap:10px}
-    .reply .avatar{width:24px;height:24px;border-radius:50%}
-    .reply .comment-body{flex:1}
-    .reply .comment-text{font-size:13px}
-    /* Chat message styles */
-    .chat-message{padding:8px 16px;background:${c.bgColor};display:flex;align-items:flex-start;gap:12px}
-    .chat-message .avatar{width:24px;height:24px;border-radius:50%;flex-shrink:0;margin-top:2px}
-    .chat-message .avatar-placeholder{width:24px;height:24px;border-radius:50%;background:${c.secondaryText};flex-shrink:0;margin-top:2px}
-    .chat-message .msg-content{flex:1;min-width:0}
-    .chat-message .timestamp{color:${c.secondaryText};font-size:11px;margin-right:8px}
-    .chat-message .author{font-size:13px;font-weight:500;margin-right:4px}
-    .chat-message .text{font-size:13px;word-break:break-word;color:${c.textColor}}
-    .chat-message .badge{display:inline-block;font-size:10px;padding:1px 4px;border-radius:2px;margin-right:4px;font-weight:500}
-    .chat-message .badge.owner{background:#ffd600;color:#0f0f0f}
-    .chat-message .badge.moderator{background:#5e84f1;color:#fff}
-    .chat-message .badge.member{background:#2ba640;color:#fff}
-    .chat-message.superchat{background:${c.isDark?'#1a3a1a':'#e8f5e9'};border-left:3px solid #ffd600;border-radius:4px;padding:12px 16px}
-    .chat-message .superchat-amount{font-weight:700;color:#ffd600;font-size:14px;margin-bottom:4px}
-    .chat-message.membership{background:${c.isDark?'#1a2a1a':'#e8f5e9'};border-left:3px solid #2ba640;border-radius:4px;padding:12px 16px}
-  `;
+  style.textContent = buildStyles(c);
   document.head.appendChild(style);
 
   const zip = new JSZip();
@@ -61,11 +27,12 @@ async function renderAndZip({ comments, chat, theme, folderPrefix }) {
   const totalChat = (chat || []).length;
   const grandTotal = totalRC + totalChat;
   let processed = 0;
+  const date = dateStr || 'unknown';
 
   // Render regular comments
   for (let i = 0; i < totalRC; i++) {
     const cm = comments[i];
-    renderArea.innerHTML = buildCommentHTML(cm);
+    renderArea.innerHTML = buildCommentHTML(cm, c);
     await waitForImages(renderArea);
     await delay(50);
 
@@ -74,7 +41,7 @@ async function renderAndZip({ comments, chat, theme, folderPrefix }) {
       const canvas = await html2canvas(el, { backgroundColor: c.bgColor, scale: 2, useCORS: true, width: 600 });
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
       const author = safeName(cm.a || 'comment');
-      const filename = `${author}_YT_RC_${pad4(i + 1)}-${pad4(totalRC)}_${cm.id || 'unknown'}.png`;
+      const filename = `${author}_YT_RC_${pad4(i + 1)}-${pad4(totalRC)}_${date}_${cm.id || 'unknown'}.png`;
       zip.file(filename, blob);
     } catch (e) {
       console.error('Screenshot failed for comment', cm.id, e);
@@ -96,7 +63,7 @@ async function renderAndZip({ comments, chat, theme, folderPrefix }) {
       const canvas = await html2canvas(el, { backgroundColor: c.bgColor, scale: 2, useCORS: true, width: 600 });
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
       const author = safeName(msg.a || 'chat');
-      const filename = `${author}_YT_Live_Chat_${pad4(i + 1)}-${pad4(totalChat)}_${msg.id || 'unknown'}.png`;
+      const filename = `${author}_YT_Live_Chat_${pad4(i + 1)}-${pad4(totalChat)}_${date}_${msg.id || 'unknown'}.png`;
       zip.file(filename, blob);
     } catch (e) {
       console.error('Screenshot failed for chat msg', msg.id, e);
@@ -109,6 +76,168 @@ async function renderAndZip({ comments, chat, theme, folderPrefix }) {
   const zipBlob = await zip.generateAsync({ type: 'base64' });
   return { base64: zipBlob, count: grandTotal };
 }
+
+function buildStyles(c) {
+  return `
+/* ─── YouTube-style regular comments ─── */
+.yt-comment {
+  padding: 16px 16px 12px;
+  background: ${c.bgColor};
+  display: flex;
+  gap: 16px;
+  font-family: 'Roboto','YouTube Sans','Arial',sans-serif;
+}
+.yt-comment .avatar {
+  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+  background: ${c.isDark ? '#3f3f3f' : '#e0e0e0'};
+  object-fit: cover;
+}
+.yt-comment .body { flex: 1; min-width: 0; }
+.yt-comment .header {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: 4px; flex-wrap: wrap;
+}
+.yt-comment .author-name {
+  font-size: 13px; font-weight: 500; line-height: 18px;
+  color: ${c.textColor};
+}
+.yt-comment .author-name.owner {
+  background: ${c.isDark ? '#272727' : '#e8e8e8'};
+  padding: 2px 8px; border-radius: 12px;
+}
+.yt-comment .timestamp {
+  font-size: 12px; color: ${c.secondaryText}; line-height: 18px;
+}
+.yt-comment .pinned-label {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; color: ${c.secondaryText};
+  margin-bottom: 4px;
+}
+.yt-comment .pinned-label svg { fill: ${c.secondaryText}; }
+.yt-comment .text {
+  font-size: 14px; line-height: 20px;
+  white-space: pre-wrap; word-break: break-word;
+  color: ${c.textColor}; margin-bottom: 8px;
+}
+.yt-comment .actions {
+  display: flex; align-items: center; gap: 8px;
+  color: ${c.secondaryText}; font-size: 12px;
+}
+.yt-comment .action-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border-radius: 20px;
+  font-size: 12px; color: ${c.secondaryText};
+}
+.yt-comment .action-btn svg { fill: ${c.secondaryText}; width: 16px; height: 16px; }
+.yt-comment .like-count { font-size: 12px; color: ${c.secondaryText}; }
+.yt-comment .heart-icon {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-left: 4px;
+}
+.yt-comment .heart-icon svg { fill: #ff0000; width: 14px; height: 14px; }
+.yt-comment .reply-count {
+  font-size: 13px; font-weight: 500;
+  color: ${c.accentColor}; cursor: default;
+  padding: 8px 16px; border-radius: 20px;
+}
+/* Replies */
+.yt-replies { margin-left: 56px; padding-top: 4px; }
+.yt-reply {
+  display: flex; gap: 12px; padding: 8px 0;
+  font-family: 'Roboto','YouTube Sans','Arial',sans-serif;
+}
+.yt-reply .avatar {
+  width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+  background: ${c.isDark ? '#3f3f3f' : '#e0e0e0'};
+  object-fit: cover;
+}
+.yt-reply .body { flex: 1; min-width: 0; }
+.yt-reply .header {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: 2px; flex-wrap: wrap;
+}
+.yt-reply .author-name {
+  font-size: 12px; font-weight: 500; color: ${c.textColor};
+}
+.yt-reply .author-name.owner {
+  background: ${c.isDark ? '#272727' : '#e8e8e8'};
+  padding: 2px 6px; border-radius: 12px;
+}
+.yt-reply .timestamp { font-size: 12px; color: ${c.secondaryText}; }
+.yt-reply .text {
+  font-size: 13px; line-height: 18px;
+  white-space: pre-wrap; word-break: break-word;
+  color: ${c.textColor}; margin-bottom: 4px;
+}
+.yt-reply .actions {
+  display: flex; align-items: center; gap: 8px;
+  color: ${c.secondaryText}; font-size: 12px;
+}
+.yt-reply .action-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: ${c.secondaryText};
+}
+.yt-reply .action-btn svg { fill: ${c.secondaryText}; width: 14px; height: 14px; }
+
+/* ─── YouTube-style live chat messages ─── */
+.yt-chat {
+  padding: 8px 16px;
+  background: ${c.bgColor};
+  display: flex; align-items: flex-start; gap: 16px;
+  font-family: 'Roboto','YouTube Sans','Arial',sans-serif;
+}
+.yt-chat .avatar {
+  width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+  margin-top: 2px;
+  background: ${c.isDark ? '#3f3f3f' : '#e0e0e0'};
+  object-fit: cover;
+}
+.yt-chat .msg-body { flex: 1; min-width: 0; }
+.yt-chat .msg-header {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+.yt-chat .chat-ts {
+  font-size: 11px; color: ${c.secondaryText}; flex-shrink: 0;
+}
+.yt-chat .chat-author {
+  font-size: 12px; font-weight: 500;
+}
+.yt-chat .chat-badge {
+  display: inline-block; font-size: 10px; padding: 1px 5px;
+  border-radius: 2px; margin-left: 2px; font-weight: 500;
+}
+.yt-chat .chat-badge.owner { background: #ffd600; color: #0f0f0f; }
+.yt-chat .chat-badge.mod { background: #5e84f1; color: #fff; }
+.yt-chat .chat-badge.member { background: #2ba640; color: #fff; }
+.yt-chat .chat-text {
+  font-size: 13px; line-height: 18px;
+  word-break: break-word; color: ${c.textColor};
+}
+.yt-chat.superchat {
+  background: ${c.isDark ? '#1a3a1a' : '#e8f5e9'};
+  border-left: 3px solid #ffd600;
+  border-radius: 8px; padding: 12px 16px;
+  margin: 2px 0;
+}
+.yt-chat .sc-amount {
+  font-weight: 700; color: #ffd600; font-size: 15px;
+  margin-bottom: 4px; display: block;
+}
+.yt-chat.membership {
+  background: ${c.isDark ? '#1a2a1a' : '#e8f5e9'};
+  border-left: 3px solid #2ba640;
+  border-radius: 8px; padding: 12px 16px;
+  margin: 2px 0;
+}
+`;
+}
+
+// SVG icons matching YouTube's style
+const SVG_LIKE = '<svg viewBox="0 0 16 16" width="16" height="16"><path d="M12.42 14.06h-3.71l-.2-.14c-.24-.16-.5-.38-.78-.65a7.7 7.7 0 01-1.5-2.14 1.5 1.5 0 01-.14-.46V7.84c0-.27.07-.5.2-.7s.32-.38.56-.52a3.3 3.3 0 011.64-.47h.68V3.28a1.2 1.2 0 01.35-.85 1.16 1.16 0 01.85-.35c.27 0 .53.09.73.26s.34.38.4.64l.74 3.7h1.6c.39 0 .72.14 1 .42.27.27.41.6.41 1v4.35c0 .39-.14.72-.41 1a1.36 1.36 0 01-1 .41h-1.42zm-8.64 0H2.36c-.39 0-.72-.14-1-.41a1.36 1.36 0 01-.41-1V8.1c0-.39.14-.72.41-1s.6-.41 1-.41h1.42c.39 0 .72.14 1 .41s.42.6.42 1v4.56c0 .39-.14.72-.42 1s-.6.41-1 .41z"></path></svg>';
+const SVG_DISLIKE = '<svg viewBox="0 0 16 16" width="16" height="16"><path d="M3.54 1.94h3.71l.2.14c.24.16.5.38.78.65a7.7 7.7 0 011.5 2.14c.09.15.14.3.14.46v2.83c0 .27-.07.5-.2.7s-.32.38-.56.52a3.3 3.3 0 01-1.64.47h-.68v2.87a1.2 1.2 0 01-.35.85 1.16 1.16 0 01-.85.35c-.27 0-.53-.09-.73-.26s-.34-.38-.4-.64l-.74-3.7H2.12c-.39 0-.72-.14-1-.42a1.36 1.36 0 01-.41-1V3.59c0-.39.14-.72.41-1s.6-.41 1-.41h1.42zm8.64 0h1.42c.39 0 .72.14 1 .41s.41.6.41 1v4.56c0 .39-.14.72-.41 1s-.6.41-1 .41h-1.42c-.39 0-.72-.14-1-.41s-.42-.6-.42-1V3.35c0-.39.14-.72.42-1s.6-.41 1-.41z"></path></svg>';
+const SVG_PIN = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M16 11V4h1V2H7v2h1v7l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"></path></svg>';
+const SVG_HEART = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"></path></svg>';
 
 function reportProgress(current, total) {
   chrome.runtime.sendMessage({
@@ -150,75 +279,122 @@ function getThemeColors(theme) {
   return {
     isDark,
     bgColor: isDark ? '#0f0f0f' : '#ffffff',
-    textColor: isDark ? '#ffffff' : '#0f0f0f',
+    textColor: isDark ? '#f1f1f1' : '#0f0f0f',
     secondaryText: isDark ? '#aaaaaa' : '#606060',
     borderColor: isDark ? '#3f3f3f' : '#e0e0e0',
+    accentColor: '#3ea6ff',
   };
 }
 
-function buildCommentHTML(cm) {
-  let badges = '';
-  if (cm.pin) badges += '<span class="pin-badge">&#128204; Pinned</span>';
-  if (cm.heart) badges += '<span class="heart-badge">&#10084;</span>';
-  const authorCls = cm.own ? 'comment-author owner' : 'comment-author';
+function buildCommentHTML(cm, c) {
+  const authorCls = cm.own ? 'author-name owner' : 'author-name';
 
-  let html = '<div class="comment"><div class="comment-main">';
+  let html = '<div class="yt-comment">';
+
+  // Avatar
   html += cm.img
     ? '<img class="avatar" src="' + esc(cm.img) + '" alt="" crossorigin="anonymous" />'
-    : '<div class="avatar" style="background:#666;border-radius:50%"></div>';
-  html += '<div class="comment-body"><div class="comment-header">';
-  html += '<span class="' + authorCls + '">' + esc(cm.a) + '</span>';
-  html += '<span class="comment-time">' + esc(cm.time) + '</span>' + badges + '</div>';
-  html += '<div class="comment-text">' + esc(cm.t) + '</div>';
-  html += '<div class="comment-actions">';
-  if (cm.likes > 0) html += '<span>&#128077; ' + cm.likes + '</span>';
-  if (cm.rc > 0) html += '<span>' + cm.rc + ' replies</span>';
-  html += '</div></div></div>';
+    : '<div class="avatar"></div>';
 
+  html += '<div class="body">';
+
+  // Pinned label
+  if (cm.pin) {
+    html += '<div class="pinned-label">' + SVG_PIN + ' Pinned</div>';
+  }
+
+  // Header: author + time
+  html += '<div class="header">';
+  html += '<span class="' + authorCls + '">@' + esc(cm.a) + '</span>';
+  html += '<span class="timestamp">' + esc(cm.time) + '</span>';
+  html += '</div>';
+
+  // Comment text
+  html += '<div class="text">' + esc(cm.t) + '</div>';
+
+  // Actions row
+  html += '<div class="actions">';
+  html += '<span class="action-btn">' + SVG_LIKE;
+  if (cm.likes > 0) html += '<span class="like-count">' + formatCount(cm.likes) + '</span>';
+  html += '</span>';
+  html += '<span class="action-btn">' + SVG_DISLIKE + '</span>';
+  if (cm.heart) {
+    html += '<span class="heart-icon">' + SVG_HEART + '</span>';
+  }
+  html += '</div>';
+
+  // Reply count
+  if (cm.rc > 0) {
+    html += '<div class="reply-count">' + cm.rc + (cm.rc === 1 ? ' reply' : ' replies') + '</div>';
+  }
+
+  html += '</div></div>';
+
+  // Replies
   if (cm.replies && cm.replies.length > 0) {
-    html += '<div class="replies">';
+    html += '<div class="yt-replies">';
     for (const r of cm.replies) {
-      const rBadges = r.heart ? '<span class="heart-badge">&#10084;</span>' : '';
-      const rAuthorCls = r.own ? 'comment-author owner' : 'comment-author';
-      html += '<div class="reply">';
+      const rAuthorCls = r.own ? 'author-name owner' : 'author-name';
+      html += '<div class="yt-reply">';
       html += r.img
         ? '<img class="avatar" src="' + esc(r.img) + '" alt="" crossorigin="anonymous" />'
-        : '<div class="avatar" style="background:#666;border-radius:50%;width:24px;height:24px"></div>';
-      html += '<div class="comment-body"><div class="comment-header">';
-      html += '<span class="' + rAuthorCls + '">' + esc(r.a) + '</span>';
-      html += '<span class="comment-time">' + esc(r.time) + '</span>' + rBadges + '</div>';
-      html += '<div class="comment-text">' + esc(r.t) + '</div>';
-      if (r.likes > 0) html += '<div class="comment-actions"><span>&#128077; ' + r.likes + '</span></div>';
+        : '<div class="avatar"></div>';
+      html += '<div class="body">';
+      html += '<div class="header">';
+      html += '<span class="' + rAuthorCls + '">@' + esc(r.a) + '</span>';
+      html += '<span class="timestamp">' + esc(r.time) + '</span>';
+      html += '</div>';
+      html += '<div class="text">' + esc(r.t) + '</div>';
+      html += '<div class="actions">';
+      html += '<span class="action-btn">' + SVG_LIKE;
+      if (r.likes > 0) html += '<span class="like-count">' + formatCount(r.likes) + '</span>';
+      html += '</span>';
+      html += '<span class="action-btn">' + SVG_DISLIKE + '</span>';
+      if (r.heart) {
+        html += '<span class="heart-icon">' + SVG_HEART + '</span>';
+      }
+      html += '</div>';
       html += '</div></div>';
     }
     html += '</div>';
   }
-  html += '</div>';
+
   return html;
 }
 
 function buildChatMessageHTML(msg, c) {
   let badges = '';
   let nameColor = c.textColor;
-  if (msg.o) { nameColor = c.isDark ? '#ffd600' : '#c69000'; badges += '<span class="badge owner">Owner</span>'; }
-  if (msg.mod) { nameColor = c.isDark ? '#5e84f1' : '#2962ff'; badges += '<span class="badge moderator">Mod</span>'; }
-  if (msg.mem) { badges += '<span class="badge member">Member</span>'; }
+  if (msg.o) { nameColor = c.isDark ? '#ffd600' : '#c69000'; badges += '<span class="chat-badge owner">Owner</span>'; }
+  if (msg.mod) { nameColor = c.isDark ? '#5e84f1' : '#2962ff'; badges += '<span class="chat-badge mod">Mod</span>'; }
+  if (msg.mem) { badges += '<span class="chat-badge member">Member</span>'; }
 
-  let cls = 'chat-message';
+  let cls = 'yt-chat';
   let scHeader = '';
-  if (msg.t === 'superchat') { cls += ' superchat'; scHeader = '<div class="superchat-amount">' + esc(msg.sc) + '</div>'; }
+  if (msg.t === 'superchat') { cls += ' superchat'; scHeader = '<span class="sc-amount">' + esc(msg.sc) + '</span>'; }
   else if (msg.t === 'membership') { cls += ' membership'; }
-  else if (msg.t === 'supersticker') { cls += ' superchat'; scHeader = '<div class="superchat-amount">' + esc(msg.sc) + '</div>'; }
+  else if (msg.t === 'supersticker') { cls += ' superchat'; scHeader = '<span class="sc-amount">' + esc(msg.sc) + '</span>'; }
 
   const img = msg.img
     ? '<img class="avatar" src="' + esc(msg.img) + '" alt="" crossorigin="anonymous" />'
-    : '<div class="avatar-placeholder"></div>';
+    : '<div class="avatar"></div>';
 
-  return '<div class="' + cls + '">' + scHeader +
-    img + '<div class="msg-content">' +
-    '<span class="timestamp">' + esc(msg.ts) + '</span>' +
-    '<span class="author" style="color:' + nameColor + '">' + esc(msg.a) + '</span>' +
-    badges +
-    '<span class="text">' + esc(msg.m) + '</span>' +
-    '</div></div>';
+  let html = '<div class="' + cls + '">';
+  html += img;
+  html += '<div class="msg-body">';
+  if (scHeader) html += scHeader;
+  html += '<div class="msg-header">';
+  html += '<span class="chat-ts">' + esc(msg.ts) + '</span>';
+  html += '<span class="chat-author" style="color:' + nameColor + '">' + esc(msg.a) + '</span>';
+  if (badges) html += badges;
+  html += '</div>';
+  html += '<div class="chat-text">' + esc(msg.m) + '</div>';
+  html += '</div></div>';
+  return html;
+}
+
+function formatCount(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
 }

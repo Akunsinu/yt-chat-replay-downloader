@@ -1033,7 +1033,7 @@ async function exportCommentScreenshots(theme = 'dark') {
   try {
     const result = await chrome.runtime.sendMessage({
       type: 'RENDER_COMMENT_SCREENSHOTS',
-      data: { comments, chat, theme, folderPrefix: prefix },
+      data: { comments, chat, theme, folderPrefix: prefix, dateStr: getVideoDateStr() },
     });
 
     if (result?.error) {
@@ -1143,14 +1143,7 @@ function sanitizeFilename(name) {
   return name.replace(/[<>:"/\\|?*'`!\x00-\x1f]/g, '_').replace(/\s+/g, '_').substring(0, 200);
 }
 
-function buildFolderPrefix() {
-  const videoId = currentVideoData?.videoId || 'unknown';
-  const rawTitle = currentVideoData?.title || videoMetadata?.title || videoId;
-  const title = sanitizeFilename(rawTitle).substring(0, 80);
-  const rawUploader = videoMetadata?.author || videoMetadata?.ownerChannelName || currentVideoData?.channelName || 'unknown';
-  const uploader = sanitizeFilename(rawUploader).substring(0, 40);
-
-  // Parse date: publishDate "2024-01-15" → "20240115", fallback to dateText
+function getVideoDateStr() {
   let dateStr = 'unknown';
   const pd = videoMetadata?.publishDate || videoMetadata?.uploadDate;
   if (pd) {
@@ -1163,7 +1156,16 @@ function buildFolderPrefix() {
       dateStr = dt.getFullYear() + String(dt.getMonth() + 1).padStart(2, '0') + String(dt.getDate()).padStart(2, '0');
     }
   }
+  return dateStr;
+}
 
+function buildFolderPrefix() {
+  const videoId = currentVideoData?.videoId || 'unknown';
+  const rawTitle = currentVideoData?.title || videoMetadata?.title || videoId;
+  const title = sanitizeFilename(rawTitle).substring(0, 80);
+  const rawUploader = videoMetadata?.author || videoMetadata?.ownerChannelName || currentVideoData?.channelName || 'unknown';
+  const uploader = sanitizeFilename(rawUploader).substring(0, 40);
+  const dateStr = getVideoDateStr();
   const commentCount = regularComments.length;
   return `YT_${title}_${videoId}_${uploader}_${dateStr}_${commentCount}`;
 }
@@ -1384,6 +1386,7 @@ body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor
 (function(){
 var allMessages=${messagesJSON};
 var totalMessages=allMessages.length;
+var videoDate=${JSON.stringify(getVideoDateStr())};
 var PAGE_SIZE=500;
 var currentPage=0;
 var filtered=allMessages;
@@ -1473,7 +1476,7 @@ var author=safeName(msgEl.dataset.author||'chat');
 var mid=msgEl.dataset.msgId||'unknown';
 var idx=parseInt(msgEl.dataset.idx||'0',10);
 var link=document.createElement('a');
-link.download=author+'_YT_Live_Chat_'+pad4(idx+1)+'-'+pad4(totalMessages)+'_'+mid+'.png';
+link.download=author+'_YT_Live_Chat_'+pad4(idx+1)+'-'+pad4(totalMessages)+'_'+videoDate+'_'+mid+'.png';
 link.href=canvas.toDataURL('image/png');
 link.click();
 }).catch(function(e){
@@ -1639,6 +1642,7 @@ ${h2cSrc ? '<script>' + h2cSrc + '<\/script>' : ''}
 (function(){
 var allComments=${commentsJSON};
 var totalComments=allComments.length;
+var videoDate=${JSON.stringify(getVideoDateStr())};
 var PAGE_SIZE=100;
 var currentPage=0;
 var filtered=allComments;
@@ -1733,7 +1737,7 @@ var author=safeName(commentEl.dataset.author||'comment');
 var cid=commentEl.dataset.commentId||'unknown';
 var idx=parseInt(commentEl.dataset.idx||'0',10);
 var link=document.createElement('a');
-link.download=author+'_YT_RC_'+pad4(idx+1)+'-'+pad4(totalComments)+'_'+cid+'.png';
+link.download=author+'_YT_RC_'+pad4(idx+1)+'-'+pad4(totalComments)+'_'+videoDate+'_'+cid+'.png';
 link.href=canvas.toDataURL('image/png');
 link.click();
 }).catch(function(e){
@@ -2004,6 +2008,7 @@ document.getElementById('btnLoadMoreComments').addEventListener('click',renderCo
 ${h2cSrc ? '<script>' + h2cSrc + '<\/script>' : ''}
 ${h2cSrc ? `<script>
 (function(){
+var videoDate=${JSON.stringify(getVideoDateStr())};
 function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
 function pad4(n){return String(n).padStart(4,'0')}
 window.screenshotComment=function(btn){
@@ -2018,7 +2023,7 @@ var cid=commentEl.dataset.commentId||'unknown';
 var idx=parseInt(commentEl.dataset.idx||'0',10);
 var total=parseInt(commentEl.dataset.total||'0',10);
 var link=document.createElement('a');
-link.download=author+'_YT_RC_'+pad4(idx+1)+'-'+pad4(total)+'_'+cid+'.png';
+link.download=author+'_YT_RC_'+pad4(idx+1)+'-'+pad4(total)+'_'+videoDate+'_'+cid+'.png';
 link.href=canvas.toDataURL('image/png');
 link.click();
 }).catch(function(e){
