@@ -964,9 +964,12 @@ async function exportYouTubeClone(theme = 'dark') {
 
 async function exportCommentScreenshots(theme = 'dark') {
   if (regularComments.length === 0 && chatMessages.length === 0) {
-    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'No comments or chat messages to screenshot.' } });
+    broadcastToSidePanel({ type: 'SCREENSHOT_ERROR', data: { error: 'No comments or chat messages to screenshot.' } });
     return;
   }
+
+  // Signal start so panel shows progress bar
+  broadcastToSidePanel({ type: 'SCREENSHOT_PROGRESS', data: { current: 0, total: 0 } });
 
   const prefix = buildFolderPrefix();
 
@@ -983,6 +986,7 @@ async function exportCommentScreenshots(theme = 'dark') {
     img: cm.author_profile_image,
     t: cm.text,
     time: cm.published_time_text,
+    fat: cm.fetched_at_ms || Date.now(),
     likes: cm.like_count,
     rc: cm.reply_count,
     own: cm.is_channel_owner,
@@ -994,6 +998,7 @@ async function exportCommentScreenshots(theme = 'dark') {
       img: r.author_profile_image,
       t: r.text,
       time: r.published_time_text,
+      fat: r.fetched_at_ms || Date.now(),
       likes: r.like_count,
       own: r.is_channel_owner,
       heart: r.is_hearted,
@@ -1037,7 +1042,7 @@ async function exportCommentScreenshots(theme = 'dark') {
     });
 
     if (result?.error) {
-      broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'Screenshot rendering failed: ' + result.error } });
+      broadcastToSidePanel({ type: 'SCREENSHOT_ERROR', data: { error: 'Screenshot rendering failed: ' + result.error } });
       return;
     }
 
@@ -1047,14 +1052,16 @@ async function exportCommentScreenshots(theme = 'dark') {
       chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, (downloadId) => {
         if (chrome.runtime.lastError) {
           console.error('[YT Archiver] Screenshot zip download failed:', chrome.runtime.lastError.message);
+          broadcastToSidePanel({ type: 'SCREENSHOT_ERROR', data: { error: 'Download failed: ' + chrome.runtime.lastError.message } });
         } else {
           console.log('[YT Archiver] Screenshot zip downloaded:', downloadId, filename);
+          broadcastToSidePanel({ type: 'SCREENSHOT_COMPLETE' });
         }
       });
     }
   } catch (e) {
     console.error('[YT Archiver] exportCommentScreenshots error:', e);
-    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'Screenshot export failed: ' + e.message } });
+    broadcastToSidePanel({ type: 'SCREENSHOT_ERROR', data: { error: 'Screenshot export failed: ' + e.message } });
   } finally {
     chrome.offscreen.closeDocument().catch(() => {});
   }
@@ -1350,7 +1357,7 @@ body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor
 <div class="tab" data-tab="analytics">Analytics</div>
 </div>
 <div class="tab-content active" id="tab-chat">
-<div class="search-bar"><input type="text" id="searchInput" placeholder="Search messages or @username..." /></div>
+<div class="search-bar"><input type="text" id="searchInput" placeholder="Search messages or @username..." /><select id="sortSelect" style="padding:8px 12px;border-radius:20px;border:1px solid ${c.borderColor};background:${c.inputBg};color:${c.textColor};font-size:13px;cursor:pointer;outline:none"><option value="default">Default Order</option><option value="user">Sort by User</option></select></div>
 <div class="filter-chips">
 <div class="chip active" data-filter="all">All</div>
 <div class="chip" data-filter="text">Text (${typeCounts.text.toLocaleString()})</div>
@@ -1415,6 +1422,7 @@ var ssBtn=${h2cSrc ? "'<button class=\"screenshot-btn\" title=\"Screenshot\" onc
 return '<div class="'+cls+'" data-msg-id="'+escH(msg.id)+'" data-author="'+escH(msg.a)+'" data-idx="'+idx+'">'+scHeader+'<div class="message-body">'+img+'<div class="message-content"><span class="timestamp">'+escH(msg.ts)+'</span><span class="author" style="color:'+nameColor+'">'+escH(msg.a)+'</span>'+badges+'<span class="text">'+escH(msg.m)+'</span>'+ssBtn+'</div></div></div>';
 }
 
+var currentSort='default';
 function applyFilters(){
 searchTerm=document.getElementById('searchInput').value.toLowerCase().trim();
 var isAuthor=searchTerm.startsWith('@');
@@ -1428,10 +1436,13 @@ else{matchSearch=msg.m.toLowerCase().indexOf(term)!==-1||msg.a.toLowerCase().ind
 }
 return matchType&&matchSearch;
 });
+if(currentSort==='user'){filtered.sort(function(a,b){return a.a.toLowerCase().localeCompare(b.a.toLowerCase());});}
 currentPage=0;
 container.innerHTML='';
 renderPage();
-document.getElementById('searchInfo').textContent=(searchTerm||activeFilter!=='all')?'Showing '+filtered.length.toLocaleString()+' of '+allMessages.length.toLocaleString()+' messages':'';
+var info=(searchTerm||activeFilter!=='all'||currentSort!=='default')?'Showing '+filtered.length.toLocaleString()+' of '+allMessages.length.toLocaleString()+' messages':'';
+if(currentSort!=='default'&&info)info+=' (sorted by user)';
+document.getElementById('searchInfo').textContent=info;
 }
 
 function renderPage(){
@@ -1448,6 +1459,7 @@ renderPage();
 
 document.getElementById('btnLoadMore').addEventListener('click',renderPage);
 document.getElementById('searchInput').addEventListener('input',applyFilters);
+document.getElementById('sortSelect').addEventListener('change',function(){currentSort=this.value;applyFilters();});
 document.querySelectorAll('.chip').forEach(function(chip){
 chip.addEventListener('click',function(){
 document.querySelectorAll('.chip').forEach(function(c){c.classList.remove('active');});
@@ -1528,6 +1540,7 @@ function generateCommentsHTML(comments, title, channelName, theme, h2cSrc) {
     img: cm.author_profile_image,
     t: cm.text,
     time: cm.published_time_text,
+    fat: cm.fetched_at_ms || Date.now(),
     likes: cm.like_count,
     rc: cm.reply_count,
     own: cm.is_channel_owner,
@@ -1539,6 +1552,7 @@ function generateCommentsHTML(comments, title, channelName, theme, h2cSrc) {
       img: r.author_profile_image,
       t: r.text,
       time: r.published_time_text,
+      fat: r.fetched_at_ms || Date.now(),
       likes: r.like_count,
       own: r.is_channel_owner,
       heart: r.is_hearted,
@@ -1619,7 +1633,7 @@ body{font-family:'Roboto','YouTube Sans',Arial,sans-serif;background:${c.bgColor
 <div class="tab" data-tab="analytics">Analytics</div>
 </div>
 <div class="tab-content active" id="tab-comments">
-<div class="search-bar"><input type="text" id="searchInput" placeholder="Search comments or @username..." /></div>
+<div class="search-bar"><input type="text" id="searchInput" placeholder="Search comments or @username..." /><select id="sortSelect" style="padding:8px 12px;border-radius:20px;border:1px solid ${c.borderColor};background:${c.inputBg};color:${c.textColor};font-size:13px;cursor:pointer;outline:none"><option value="default">Default Order</option><option value="user">Sort by User</option><option value="likes">Most Liked</option><option value="replies">Most Replies</option></select></div>
 <div class="search-info" id="searchInfo"></div>
 <div class="comments-container" id="commentsContainer"></div>
 <div class="load-more" id="loadMore" style="display:none"><button id="btnLoadMore">Load More</button></div>
@@ -1652,15 +1666,39 @@ var loadMoreDiv=document.getElementById('loadMore');
 function escH(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function safeName(s){return s.replace(/[<>:"\\/|?*\\x00-\\x1f]/g,'_').replace(/\\s+/g,'_').substring(0,60)}
 function pad4(n){return String(n).padStart(4,'0')}
+function resolveDate(rel,fat){
+if(!rel||!fat)return rel||'';
+var edited=/\(edited\)/i.test(rel);
+var t=rel.replace(/\s*\(edited\)\s*/i,'').toLowerCase().trim();
+var m=t.match(/^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago$/);
+if(m){var amt=parseInt(m[1],10);var u=m[2];var d=new Date(fat);
+if(u==='second')d.setSeconds(d.getSeconds()-amt);
+else if(u==='minute')d.setMinutes(d.getMinutes()-amt);
+else if(u==='hour')d.setHours(d.getHours()-amt);
+else if(u==='day')d.setDate(d.getDate()-amt);
+else if(u==='week')d.setDate(d.getDate()-amt*7);
+else if(u==='month')d.setMonth(d.getMonth()-amt);
+else if(u==='year')d.setFullYear(d.getFullYear()-amt);
+return fmtDate(d)+(edited?' (edited)':'');}
+if(t==='just now'||t.indexOf('moment')!==-1)return fmtDate(new Date(fat))+(edited?' (edited)':'');
+return rel;
+}
+function fmtDate(d){
+var mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var h=d.getHours();var ap=h>=12?'PM':'AM';var h12=h%12||12;
+var min=String(d.getMinutes()).padStart(2,'0');
+return mo[d.getMonth()]+' '+d.getDate()+', '+d.getFullYear()+' '+h12+':'+min+' '+ap;
+}
 
 function renderComment(cm,idx){
 var badges='';
 if(cm.pin)badges+='<span class="pin-badge">&#128204; Pinned</span>';
 if(cm.heart)badges+='<span class="heart-badge">&#10084;</span>';
 var authorCls=cm.own?'comment-author owner':'comment-author';
+var displayTime=resolveDate(cm.time,cm.fat);
 var html='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'" data-idx="'+idx+'"><div class="comment-main">';
 html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666;border-radius:50%"></div>';
-html+='<div class="comment-body"><div class="comment-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="comment-time">'+escH(cm.time)+'</span>'+badges+'</div>';
+html+='<div class="comment-body"><div class="comment-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="comment-time">'+escH(displayTime)+'</span>'+badges+'</div>';
 html+='<div class="comment-text">'+escH(cm.t)+'</div>';
 html+='<div class="comment-actions">';
 if(cm.likes>0)html+='<span>&#128077; '+cm.likes+'</span>';
@@ -1673,9 +1711,10 @@ for(var i=0;i<cm.replies.length;i++){
 var r=cm.replies[i];
 var rBadges=r.heart?'<span class="heart-badge">&#10084;</span>':'';
 var rAuthorCls=r.own?'comment-author owner':'comment-author';
+var rDisplayTime=resolveDate(r.time,r.fat);
 html+='<div class="reply">';
 html+=r.img?'<img class="avatar" src="'+escH(r.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666;border-radius:50%;width:24px;height:24px"></div>';
-html+='<div class="comment-body"><div class="comment-header"><span class="'+rAuthorCls+'">'+escH(r.a)+'</span><span class="comment-time">'+escH(r.time)+'</span>'+rBadges+'</div>';
+html+='<div class="comment-body"><div class="comment-header"><span class="'+rAuthorCls+'">'+escH(r.a)+'</span><span class="comment-time">'+escH(rDisplayTime)+'</span>'+rBadges+'</div>';
 html+='<div class="comment-text">'+escH(r.t)+'</div>';
 if(r.likes>0)html+='<div class="comment-actions"><span>&#128077; '+r.likes+'</span></div>';
 html+='</div></div>';
@@ -1698,11 +1737,12 @@ loadMoreDiv.style.display=end<filtered.length?'block':'none';
 renderPage();
 
 document.getElementById('btnLoadMore').addEventListener('click',renderPage);
-document.getElementById('searchInput').addEventListener('input',function(){
-var q=this.value.toLowerCase().trim();
+var currentSort='default';
+function applyFiltersAndSort(){
+var q=document.getElementById('searchInput').value.toLowerCase().trim();
 var isAuthor=q.startsWith('@');
 var term=isAuthor?q.slice(1):q;
-if(!term){filtered=allComments;}else{
+if(!term){filtered=allComments.slice();}else{
 filtered=allComments.filter(function(cm){
 var match=isAuthor?cm.a.toLowerCase().indexOf(term)!==-1:cm.t.toLowerCase().indexOf(term)!==-1||cm.a.toLowerCase().indexOf(term)!==-1;
 if(!match&&cm.replies){
@@ -1714,9 +1754,14 @@ if(isAuthor?r.a.toLowerCase().indexOf(term)!==-1:r.t.toLowerCase().indexOf(term)
 return match;
 });
 }
+if(currentSort==='user'){filtered.sort(function(a,b){return a.a.toLowerCase().localeCompare(b.a.toLowerCase());});}
+else if(currentSort==='likes'){filtered.sort(function(a,b){return (b.likes||0)-(a.likes||0);});}
+else if(currentSort==='replies'){filtered.sort(function(a,b){return (b.rc||0)-(a.rc||0);});}
 currentPage=0;container.innerHTML='';renderPage();
-document.getElementById('searchInfo').textContent=q?'Showing '+filtered.length+' of '+allComments.length+' comments':'';
-});
+document.getElementById('searchInfo').textContent=(q||currentSort!=='default')?'Showing '+filtered.length+' of '+allComments.length+' comments'+(currentSort!=='default'?' (sorted by '+currentSort+')':''):'';
+}
+document.getElementById('searchInput').addEventListener('input',applyFiltersAndSort);
+document.getElementById('sortSelect').addEventListener('change',function(){currentSort=this.value;applyFiltersAndSort();});
 document.querySelectorAll('.tab').forEach(function(tab){
 tab.addEventListener('click',function(){
 document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
@@ -1783,6 +1828,7 @@ function generateYouTubeCloneHTML(theme, h2cSrc) {
     img: cm.author_profile_image,
     t: cm.text,
     time: cm.published_time_text,
+    fat: cm.fetched_at_ms || Date.now(),
     likes: cm.like_count,
     rc: cm.reply_count,
     own: cm.is_channel_owner,
@@ -1926,6 +1972,28 @@ ${hasChatData ? '<div class="chat-box"><div class="chat-header">Chat Replay &bul
 <script>
 (function(){
 var escH=function(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML};
+function resolveDate(rel,fat){
+if(!rel||!fat)return rel||'';
+var t=rel.toLowerCase().trim();
+var m=t.match(/^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago$/);
+if(m){var amt=parseInt(m[1],10);var u=m[2];var d=new Date(fat);
+if(u==='second')d.setSeconds(d.getSeconds()-amt);
+else if(u==='minute')d.setMinutes(d.getMinutes()-amt);
+else if(u==='hour')d.setHours(d.getHours()-amt);
+else if(u==='day')d.setDate(d.getDate()-amt);
+else if(u==='week')d.setDate(d.getDate()-amt*7);
+else if(u==='month')d.setMonth(d.getMonth()-amt);
+else if(u==='year')d.setFullYear(d.getFullYear()-amt);
+return fmtDate(d);}
+if(t==='just now'||t.indexOf('moment')!==-1)return fmtDate(new Date(fat));
+return rel;
+}
+function fmtDate(d){
+var mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var h=d.getHours();var ap=h>=12?'PM':'AM';var h12=h%12||12;
+var min=String(d.getMinutes()).padStart(2,'0');
+return mo[d.getMonth()]+' '+d.getDate()+', '+d.getFullYear()+' '+h12+':'+min+' '+ap;
+}
 
 // Video error handling
 var vid=document.querySelector('video');
@@ -1969,9 +2037,10 @@ var badges='';
 if(cm.pin)badges+='<span class="cm-pin">&#128204; Pinned</span>';
 if(cm.heart)badges+='<span class="cm-heart">&#10084;</span>';
 var authorCls=cm.own?'cm-author owner':'cm-author';
+var displayTime=resolveDate(cm.time,cm.fat);
 html+='<div class="comment" data-comment-id="'+escH(cm.id)+'" data-author="'+escH(cm.a)+'" data-idx="'+i+'" data-total="'+topLevel.length+'">';
 html+=cm.img?'<img class="avatar" src="'+escH(cm.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666"></div>';
-html+='<div class="body"><div class="cm-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="cm-time">'+escH(cm.time)+'</span>'+badges+'</div>';
+html+='<div class="body"><div class="cm-header"><span class="'+authorCls+'">'+escH(cm.a)+'</span><span class="cm-time">'+escH(displayTime)+'</span>'+badges+'</div>';
 html+='<div class="cm-text">'+escH(cm.t)+'</div>';
 html+='<div class="cm-actions">';
 if(cm.likes>0)html+='<span>&#128077; '+cm.likes+'</span>';
@@ -1984,9 +2053,10 @@ html+='<div class="reply-group">';
 for(var j=0;j<reps.length;j++){
 var r=reps[j];
 var rAuthorCls=r.own?'cm-author owner':'cm-author';
+var rDisplayTime=resolveDate(r.time,r.fat);
 html+='<div class="reply">';
 html+=r.img?'<img class="avatar" src="'+escH(r.img)+'" alt="" loading="lazy" />':'<div class="avatar" style="background:#666;width:24px;height:24px"></div>';
-html+='<div class="body"><div class="cm-header"><span class="'+rAuthorCls+'">'+escH(r.a)+'</span><span class="cm-time">'+escH(r.time)+'</span>'+(r.heart?'<span class="cm-heart">&#10084;</span>':'')+'</div>';
+html+='<div class="body"><div class="cm-header"><span class="'+rAuthorCls+'">'+escH(r.a)+'</span><span class="cm-time">'+escH(rDisplayTime)+'</span>'+(r.heart?'<span class="cm-heart">&#10084;</span>':'')+'</div>';
 html+='<div class="cm-text">'+escH(r.t)+'</div>';
 if(r.likes>0)html+='<div class="cm-actions"><span>&#128077; '+r.likes+'</span></div>';
 html+='</div></div>';

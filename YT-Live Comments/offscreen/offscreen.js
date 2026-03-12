@@ -34,7 +34,7 @@ async function renderAndZip({ comments, chat, theme, folderPrefix, dateStr }) {
     const cm = comments[i];
     renderArea.innerHTML = buildCommentHTML(cm, c);
     await waitForImages(renderArea);
-    await delay(50);
+    await delay(20);
 
     try {
       const el = renderArea.firstElementChild;
@@ -43,12 +43,23 @@ async function renderAndZip({ comments, chat, theme, folderPrefix, dateStr }) {
       const author = safeName(cm.a || 'comment');
       const filename = `${author}_YT_RC_${pad4(i + 1)}-${pad4(totalRC)}_${date}_${cm.id || 'unknown'}.png`;
       zip.file(filename, blob);
+
+      // Clean up canvas to free memory
+      canvas.width = 0;
+      canvas.height = 0;
     } catch (e) {
       console.error('Screenshot failed for comment', cm.id, e);
     }
 
+    // Clear DOM to free memory
+    renderArea.innerHTML = '';
+
     processed++;
-    if (processed % 10 === 0 || processed === grandTotal) reportProgress(processed, grandTotal);
+    if (processed % 10 === 0 || processed === grandTotal) {
+      reportProgress(processed, grandTotal);
+      // Yield to event loop for GC and message processing
+      await delay(0);
+    }
   }
 
   // Render live chat messages
@@ -56,7 +67,7 @@ async function renderAndZip({ comments, chat, theme, folderPrefix, dateStr }) {
     const msg = chat[i];
     renderArea.innerHTML = buildChatMessageHTML(msg, c);
     await waitForImages(renderArea);
-    await delay(50);
+    await delay(20);
 
     try {
       const el = renderArea.firstElementChild;
@@ -65,13 +76,26 @@ async function renderAndZip({ comments, chat, theme, folderPrefix, dateStr }) {
       const author = safeName(msg.a || 'chat');
       const filename = `${author}_YT_Live_Chat_${pad4(i + 1)}-${pad4(totalChat)}_${date}_${msg.id || 'unknown'}.png`;
       zip.file(filename, blob);
+
+      // Clean up canvas to free memory
+      canvas.width = 0;
+      canvas.height = 0;
     } catch (e) {
       console.error('Screenshot failed for chat msg', msg.id, e);
     }
 
+    // Clear DOM to free memory
+    renderArea.innerHTML = '';
+
     processed++;
-    if (processed % 10 === 0 || processed === grandTotal) reportProgress(processed, grandTotal);
+    if (processed % 10 === 0 || processed === grandTotal) {
+      reportProgress(processed, grandTotal);
+      await delay(0);
+    }
   }
+
+  // Report that we're now zipping
+  reportProgress(grandTotal, grandTotal);
 
   const zipBlob = await zip.generateAsync({ type: 'base64' });
   return { base64: zipBlob, count: grandTotal };
@@ -274,6 +298,50 @@ function delay(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function resolveAbsoluteDate(relativeText, fetchedAtMs) {
+  if (!relativeText || !fetchedAtMs) return relativeText || '';
+  const now = new Date(fetchedAtMs);
+  const raw = relativeText.trim();
+  const edited = /\(edited\)/i.test(raw);
+  const text = raw.replace(/\s*\(edited\)\s*/i, '').toLowerCase().trim();
+
+  // Match patterns like "1 day ago", "2 weeks ago", "3 months ago", "1 year ago",
+  // "5 minutes ago", "2 hours ago", "just now", "1 second ago"
+  const match = text.match(/^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago$/);
+  if (match) {
+    const amount = parseInt(match[1], 10);
+    const unit = match[2];
+    const d = new Date(now);
+    switch (unit) {
+      case 'second': d.setSeconds(d.getSeconds() - amount); break;
+      case 'minute': d.setMinutes(d.getMinutes() - amount); break;
+      case 'hour': d.setHours(d.getHours() - amount); break;
+      case 'day': d.setDate(d.getDate() - amount); break;
+      case 'week': d.setDate(d.getDate() - amount * 7); break;
+      case 'month': d.setMonth(d.getMonth() - amount); break;
+      case 'year': d.setFullYear(d.getFullYear() - amount); break;
+    }
+    return formatAbsoluteDate(d) + (edited ? ' (edited)' : '');
+  }
+
+  // "just now" or "moments ago"
+  if (text === 'just now' || text.includes('moment')) {
+    return formatAbsoluteDate(now) + (edited ? ' (edited)' : '');
+  }
+
+  // Already absolute or unrecognized — return as-is
+  return relativeText;
+}
+
+function formatAbsoluteDate(d) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const h = d.getHours();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} ${h12}:${min} ${ampm}`;
+}
+
 function getThemeColors(theme) {
   const isDark = theme === 'dark';
   return {
@@ -288,6 +356,7 @@ function getThemeColors(theme) {
 
 function buildCommentHTML(cm, c) {
   const authorCls = cm.own ? 'author-name owner' : 'author-name';
+  const displayTime = resolveAbsoluteDate(cm.time, cm.fat);
 
   let html = '<div class="yt-comment">';
 
@@ -306,7 +375,7 @@ function buildCommentHTML(cm, c) {
   // Header: author + time
   html += '<div class="header">';
   html += '<span class="' + authorCls + '">@' + esc(cm.a) + '</span>';
-  html += '<span class="timestamp">' + esc(cm.time) + '</span>';
+  html += '<span class="timestamp">' + esc(displayTime) + '</span>';
   html += '</div>';
 
   // Comment text
@@ -335,6 +404,7 @@ function buildCommentHTML(cm, c) {
     html += '<div class="yt-replies">';
     for (const r of cm.replies) {
       const rAuthorCls = r.own ? 'author-name owner' : 'author-name';
+      const rDisplayTime = resolveAbsoluteDate(r.time, r.fat);
       html += '<div class="yt-reply">';
       html += r.img
         ? '<img class="avatar" src="' + esc(r.img) + '" alt="" crossorigin="anonymous" />'
@@ -342,7 +412,7 @@ function buildCommentHTML(cm, c) {
       html += '<div class="body">';
       html += '<div class="header">';
       html += '<span class="' + rAuthorCls + '">@' + esc(r.a) + '</span>';
-      html += '<span class="timestamp">' + esc(r.time) + '</span>';
+      html += '<span class="timestamp">' + esc(rDisplayTime) + '</span>';
       html += '</div>';
       html += '<div class="text">' + esc(r.t) + '</div>';
       html += '<div class="actions">';

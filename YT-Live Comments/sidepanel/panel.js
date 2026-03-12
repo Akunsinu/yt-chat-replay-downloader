@@ -377,6 +377,24 @@ chrome.runtime.onMessage.addListener((message) => {
       }
       break;
     }
+
+    // Screenshot progress
+    case 'SCREENSHOT_PROGRESS': {
+      const d = message.data;
+      if (d) {
+        showScreenshotProgress(d.current, d.total);
+      }
+      break;
+    }
+
+    case 'SCREENSHOT_COMPLETE':
+      hideScreenshotProgress();
+      break;
+
+    case 'SCREENSHOT_ERROR':
+      hideScreenshotProgress();
+      showError(message.data?.error || 'Screenshot export failed');
+      break;
   }
 });
 
@@ -390,6 +408,31 @@ function showError(msg) {
 function hideError() {
   document.getElementById('error-message-box').classList.add('hidden');
   document.getElementById('rate-limit-warning').classList.add('hidden');
+}
+
+function showScreenshotProgress(current, total) {
+  const container = document.getElementById('screenshot-progress');
+  const fill = document.getElementById('screenshot-progress-fill');
+  const count = document.getElementById('screenshot-progress-count');
+  const label = document.getElementById('screenshot-progress-label');
+  const btn = document.getElementById('btn-download-selected');
+
+  container.classList.remove('hidden');
+  btn.disabled = true;
+  btn.textContent = 'Exporting...';
+
+  const pct = total > 0 ? (current / total * 100) : 0;
+  fill.style.width = pct + '%';
+  count.textContent = `${current.toLocaleString()} / ${total.toLocaleString()}`;
+  label.textContent = current >= total ? 'Zipping screenshots...' : 'Rendering screenshots...';
+}
+
+function hideScreenshotProgress() {
+  const container = document.getElementById('screenshot-progress');
+  const btn = document.getElementById('btn-download-selected');
+  container.classList.add('hidden');
+  btn.disabled = false;
+  btn.textContent = 'Download Selected';
 }
 
 // ─── Button Handlers ───
