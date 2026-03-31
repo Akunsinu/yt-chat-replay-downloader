@@ -833,16 +833,20 @@ function archiveFilename(suffix) {
   return `YT-Archive/${prefix}/${prefix}_${suffix}`;
 }
 
-function downloadBlob(content, mimeType, filename) {
+async function downloadBlob(content, mimeType, filename) {
   console.log('[YT Archiver SW] downloadBlob:', filename, 'size:', content.length);
   // MV3 service workers don't support URL.createObjectURL — use data URL instead
+  // Encode in chunks, yielding to the event loop to prevent UI freezes with large exports
   const encoder = new TextEncoder();
   const bytes = encoder.encode(content);
   let binary = '';
-  const chunkSize = 8192;
+  const chunkSize = 32768;
   for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
     binary += String.fromCharCode.apply(null, chunk);
+    if (i + chunkSize < bytes.length) {
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
   const base64 = btoa(binary);
   const dataUrl = `data:${mimeType};base64,${base64}`;
@@ -865,7 +869,7 @@ function escapeCSVField(val) {
 
 // ─── Metadata CSV ───
 
-function exportMetadataCSV() {
+async function exportMetadataCSV() {
   if (!videoMetadata) return;
 
   let csv = '\uFEFF';
@@ -886,12 +890,12 @@ function exportMetadataCSV() {
   }
 
   const filename = archiveFilename('metadata.csv');
-  downloadBlob(csv, 'text/csv;charset=utf-8', filename);
+  await downloadBlob(csv, 'text/csv;charset=utf-8', filename);
 }
 
 // ─── Chat CSV ───
 
-function exportChatCSV(filters) {
+async function exportChatCSV(filters) {
   const messages = filterMessages(filters);
   const headers = [
     'timestamp_ms', 'timestamp_text', 'author_name', 'author_channel_id',
@@ -906,12 +910,12 @@ function exportChatCSV(filters) {
   }
 
   const filename = archiveFilename('live_chat.csv');
-  downloadBlob(csv, 'text/csv;charset=utf-8', filename);
+  await downloadBlob(csv, 'text/csv;charset=utf-8', filename);
 }
 
 // ─── Comments CSV ───
 
-function exportCommentsCSV() {
+async function exportCommentsCSV() {
   const headers = [
     'comment_id', 'parent_comment_id', 'author_display_name', 'author_channel_id',
     'author_profile_image', 'text', 'published_time_text', 'like_count',
@@ -925,7 +929,7 @@ function exportCommentsCSV() {
   }
 
   const filename = archiveFilename('comments.csv');
-  downloadBlob(csv, 'text/csv;charset=utf-8', filename);
+  await downloadBlob(csv, 'text/csv;charset=utf-8', filename);
 }
 
 // ─── Chat HTML (existing, refactored) ───
@@ -937,7 +941,7 @@ async function exportChatHTML(theme = 'dark', filters) {
   const h2cSrc = await html2canvasSrcPromise;
   const html = generateChatHTML(messages, title, channelName, theme, h2cSrc);
   const filename = archiveFilename(`live_chat_${theme}.html`);
-  downloadBlob(html, 'text/html;charset=utf-8', filename);
+  await downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
 
 // ─── Comments HTML ───
@@ -948,7 +952,7 @@ async function exportCommentsHTML(theme = 'dark') {
   const h2cSrc = await html2canvasSrcPromise;
   const html = generateCommentsHTML(regularComments, title, channelName, theme, h2cSrc);
   const filename = archiveFilename(`comments_${theme}.html`);
-  downloadBlob(html, 'text/html;charset=utf-8', filename);
+  await downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
 
 // ─── YouTube Clone HTML ───
@@ -957,7 +961,7 @@ async function exportYouTubeClone(theme = 'dark') {
   const h2cSrc = await html2canvasSrcPromise;
   const html = generateYouTubeCloneHTML(theme, h2cSrc);
   const filename = archiveFilename('archive.html');
-  downloadBlob(html, 'text/html;charset=utf-8', filename);
+  await downloadBlob(html, 'text/html;charset=utf-8', filename);
 }
 
 // ─── Comment Screenshots (via offscreen document → zip) ───
@@ -1081,7 +1085,7 @@ async function exportAll(theme = 'dark', selected = {}) {
   try {
     if (selected.metadataCSV) {
       if (videoMetadata && Object.keys(videoMetadata).length > 0) {
-        exportMetadataCSV();
+        await exportMetadataCSV();
         exportCount++;
       } else {
         skipped.push('Metadata CSV (no metadata available)');
@@ -1089,7 +1093,7 @@ async function exportAll(theme = 'dark', selected = {}) {
     }
     if (selected.commentsCSV) {
       if (regularComments.length > 0) {
-        exportCommentsCSV();
+        await exportCommentsCSV();
         exportCount++;
       } else {
         skipped.push('Comments CSV (no comments fetched)');
@@ -1105,7 +1109,7 @@ async function exportAll(theme = 'dark', selected = {}) {
     }
     if (selected.liveChatCSV) {
       if (chatMessages.length > 0) {
-        exportChatCSV([]);
+        await exportChatCSV([]);
         exportCount++;
       } else {
         skipped.push('Live Chat CSV (no chat messages)');
@@ -1173,8 +1177,9 @@ function buildFolderPrefix() {
   const rawUploader = videoMetadata?.author || videoMetadata?.ownerChannelName || currentVideoData?.channelName || 'unknown';
   const uploader = sanitizeFilename(rawUploader).substring(0, 40);
   const dateStr = getVideoDateStr();
-  const commentCount = regularComments.length;
-  return `YT_${title}_${videoId}_${uploader}_${dateStr}_${commentCount}`;
+  const rcCount = regularComments.length;
+  const lcCount = chatMessages.length;
+  return `YT_${title}_${videoId}_${uploader}_${dateStr}_${rcCount}RC_${lcCount}LC`;
 }
 
 // ─── HTML Generators ───
