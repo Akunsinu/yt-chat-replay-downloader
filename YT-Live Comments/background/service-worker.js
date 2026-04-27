@@ -35,7 +35,31 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 // ─── State Persistence ───
 
+// Tracks the last storage warning shown so we don't spam the panel on every saveState() call.
+let lastStorageWarning = null;
+
+function notifyStorageWarning(kind, payload) {
+  // De-dupe: only emit when the warning shape changes
+  const key = JSON.stringify([kind, payload]);
+  if (lastStorageWarning === key) return;
+  lastStorageWarning = key;
+  broadcastToSidePanel({
+    type: 'STORAGE_WARNING',
+    data: { kind, ...payload },
+  });
+}
+
 async function saveState() {
+  const COMMENT_PERSIST_LIMIT = 5000;
+  const commentsTruncated = regularComments.length > COMMENT_PERSIST_LIMIT;
+  if (commentsTruncated) {
+    notifyStorageWarning('comments_not_persisted', {
+      count: regularComments.length,
+      limit: COMMENT_PERSIST_LIMIT,
+      message: `${regularComments.length.toLocaleString()} comments exceed the ${COMMENT_PERSIST_LIMIT.toLocaleString()}-row session-storage cap; data is kept in memory but won't survive a service-worker restart. Export now to be safe.`,
+    });
+  }
+
   try {
     await chrome.storage.session.set({
       _sw_state: {
@@ -44,7 +68,7 @@ async function saveState() {
         fetchState: fetchState === 'fetching' ? 'stopped' : fetchState,
         fetchProgress,
         videoMetadata,
-        regularComments: regularComments.length <= 5000 ? regularComments : [],
+        regularComments: commentsTruncated ? [] : regularComments,
         commentsFetchState: commentsFetchState === 'fetching' ? 'idle' : commentsFetchState,
         commentsFetchProgress,
         archiveSteps,
@@ -53,6 +77,11 @@ async function saveState() {
       },
     });
   } catch (e) {
+    notifyStorageWarning('quota_exceeded', {
+      messageCount: chatMessages.length,
+      commentCount: regularComments.length,
+      message: `Session-storage quota exceeded; chat (${chatMessages.length.toLocaleString()}) and comment (${regularComments.length.toLocaleString()}) data won't persist if the worker restarts. Export now.`,
+    });
     try {
       await chrome.storage.session.set({
         _sw_state: {
@@ -77,23 +106,55 @@ async function saveState() {
 }
 
 async function restoreState() {
+  // Restore is best-effort: any malformed field falls back to its default,
+  // and a fully corrupt blob leaves the worker in a clean idle state.
+  const VALID_FETCH_STATES = ['idle', 'ready', 'fetching', 'complete', 'stopped', 'error'];
+  const VALID_COMMENTS_STATES = ['idle', 'fetching', 'complete', 'error'];
+  const VALID_STEP_STATES = ['pending', 'fetching', 'downloading', 'complete', 'skipped', 'error'];
+  const STEP_KEYS = ['metadata', 'comments', 'liveChat', 'video'];
+  const defaultSteps = () => ({ metadata: 'pending', comments: 'pending', liveChat: 'pending', video: 'pending' });
+
   try {
     const result = await chrome.storage.session.get('_sw_state');
-    if (result._sw_state) {
-      const s = result._sw_state;
-      currentVideoData = s.currentVideoData || null;
-      chatMessages = s.chatMessages || [];
-      fetchState = s.fetchState || 'idle';
-      fetchProgress = s.fetchProgress || { current: 0, total: 0 };
-      videoMetadata = s.videoMetadata || null;
-      regularComments = s.regularComments || [];
-      commentsFetchState = s.commentsFetchState || 'idle';
-      commentsFetchProgress = s.commentsFetchProgress || { topLevel: 0, replies: 0 };
-      archiveSteps = s.archiveSteps || { metadata: 'pending', comments: 'pending', liveChat: 'pending', video: 'pending' };
-      activeTabId = s.activeTabId || null;
+    if (!result._sw_state || typeof result._sw_state !== 'object') return;
+    const s = result._sw_state;
+
+    currentVideoData = (s.currentVideoData && typeof s.currentVideoData === 'object') ? s.currentVideoData : null;
+    chatMessages = Array.isArray(s.chatMessages) ? s.chatMessages : [];
+    fetchState = VALID_FETCH_STATES.includes(s.fetchState) ? s.fetchState : 'idle';
+    fetchProgress = (s.fetchProgress && typeof s.fetchProgress === 'object')
+      ? { current: Number(s.fetchProgress.current) || 0, total: Number(s.fetchProgress.total) || 0 }
+      : { current: 0, total: 0 };
+    videoMetadata = (s.videoMetadata && typeof s.videoMetadata === 'object') ? s.videoMetadata : null;
+    regularComments = Array.isArray(s.regularComments) ? s.regularComments : [];
+    commentsFetchState = VALID_COMMENTS_STATES.includes(s.commentsFetchState) ? s.commentsFetchState : 'idle';
+    commentsFetchProgress = (s.commentsFetchProgress && typeof s.commentsFetchProgress === 'object')
+      ? { topLevel: Number(s.commentsFetchProgress.topLevel) || 0, replies: Number(s.commentsFetchProgress.replies) || 0 }
+      : { topLevel: 0, replies: 0 };
+
+    if (s.archiveSteps && typeof s.archiveSteps === 'object') {
+      const next = defaultSteps();
+      for (const k of STEP_KEYS) {
+        if (VALID_STEP_STATES.includes(s.archiveSteps[k])) next[k] = s.archiveSteps[k];
+      }
+      archiveSteps = next;
+    } else {
+      archiveSteps = defaultSteps();
     }
+
+    activeTabId = (typeof s.activeTabId === 'number') ? s.activeTabId : null;
   } catch (e) {
-    console.error('[YT Archiver] Failed to restore state:', e);
+    console.error('[YT Archiver] Failed to restore state, resetting to defaults:', e);
+    currentVideoData = null;
+    chatMessages = [];
+    fetchState = 'idle';
+    fetchProgress = { current: 0, total: 0 };
+    videoMetadata = null;
+    regularComments = [];
+    commentsFetchState = 'idle';
+    commentsFetchProgress = { topLevel: 0, replies: 0 };
+    archiveSteps = defaultSteps();
+    activeTabId = null;
   }
 }
 
@@ -145,7 +206,8 @@ async function handleMessage(message, sender, sendResponse) {
           metadata: (videoMetadata && Object.keys(videoMetadata).length > 0) ? 'complete' : 'pending',
           comments: d.commentsContinuationToken ? 'pending' : 'skipped',
           liveChat: d.chatContinuationToken ? 'pending' : 'skipped',
-          video: d.hasStreams ? 'pending' : 'skipped',
+          // yt-dlp resolves its own URLs; gate on videoId, not direct-stream extraction
+          video: d.videoId ? 'pending' : 'skipped',
         };
         isArchiving = false;
         if (nativeDownloadPort) {
@@ -164,7 +226,7 @@ async function handleMessage(message, sender, sendResponse) {
         if (archiveSteps.liveChat === 'skipped' && d.chatContinuationToken) {
           archiveSteps.liveChat = 'pending';
         }
-        if (archiveSteps.video === 'skipped' && d.hasStreams) {
+        if (archiveSteps.video === 'skipped' && d.videoId) {
           archiveSteps.video = 'pending';
         }
       }
@@ -423,6 +485,21 @@ async function handleMessage(message, sender, sendResponse) {
     case 'FETCH_PAGE_RESULT':
       if (message.data?.messages?.length > 0) {
         chatMessages.push(...message.data.messages);
+
+        // Hard cap to keep the worker from OOM-killing itself on multi-day VODs.
+        // 500k messages ≈ 100–200MB depending on emoji/superchat density; well
+        // above any realistic stream and below worker process limits.
+        const MAX_CHAT_MESSAGES = 500000;
+        if (chatMessages.length > MAX_CHAT_MESSAGES) {
+          const dropped = chatMessages.length - MAX_CHAT_MESSAGES;
+          chatMessages = chatMessages.slice(-MAX_CHAT_MESSAGES);
+          notifyStorageWarning('chat_memory_capped', {
+            dropped,
+            kept: MAX_CHAT_MESSAGES,
+            message: `Chat exceeded ${MAX_CHAT_MESSAGES.toLocaleString()} messages; dropped the oldest ${dropped.toLocaleString()} to stay within service-worker memory limits. Export now to keep what's left.`,
+          });
+        }
+
         fetchProgress.current = chatMessages.length;
 
         broadcastToSidePanel({
@@ -515,6 +592,16 @@ async function handleMessage(message, sender, sendResponse) {
       downloadVideo();
       sendResponse({ status: 'ok' });
       break;
+
+    case 'CHECK_NATIVE_HOST':
+      checkNativeHost(message.force === true).then((result) => {
+        sendResponse(result);
+      }).catch((e) => {
+        sendResponse({ status: 'host_missing', error: e?.message || 'Unknown error' });
+      });
+      // Indicate async sendResponse — handleMessage's outer listener already returns true,
+      // but the per-case sendResponse is what the panel awaits.
+      return;
 
     case 'EXPORT_ALL':
       exportAll(message.data?.theme, message.data?.selected);
@@ -611,7 +698,7 @@ async function startFullArchive() {
     metadata: videoMetadata && Object.keys(videoMetadata).length > 0 ? 'complete' : 'skipped',
     comments: currentVideoData?.commentsContinuationToken ? 'pending' : 'skipped',
     liveChat: currentVideoData?.chatContinuationToken ? 'pending' : 'skipped',
-    video: currentVideoData?.hasStreams ? 'pending' : 'skipped',
+    video: currentVideoData?.videoId ? 'pending' : 'skipped',
   };
   broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
 
@@ -661,20 +748,24 @@ async function continueArchive(completedStep) {
       }).catch(() => {
         archiveSteps.liveChat = 'error';
         broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
-        checkArchiveComplete();
+        // Don't stop here — video still needs to run.
+        if (isArchiving) continueArchive('liveChat');
       });
     } else if (archiveSteps.liveChat === 'pending') {
       archiveSteps.liveChat = 'skipped';
       broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
-      checkArchiveComplete();
+      // Skipped — fall through to video step.
+      continueArchive('liveChat');
     } else {
-      checkArchiveComplete();
+      // liveChat already in a terminal state (skipped/complete/error from a
+      // prior run or reset). Advance to video so we don't strand the archive.
+      continueArchive('liveChat');
     }
   }
 
   if (completedStep === 'liveChat') {
     // Start video download after comments+chat are done (so comment count in folder name is accurate)
-    if (archiveSteps.video === 'pending' && currentVideoData?.hasStreams) {
+    if (archiveSteps.video === 'pending' && currentVideoData?.videoId) {
       downloadVideo();
     }
     checkArchiveComplete();
@@ -724,6 +815,79 @@ async function stopAllFetching() {
   broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
 }
 
+// ─── Native host availability check ───
+// Three outcomes the panel cares about:
+//   { status: 'ok',            version: '<yt-dlp version>' }
+//   { status: 'ytdlp_missing'  }  — host registered but yt-dlp not on PATH
+//   { status: 'host_missing',  error: '<chrome.runtime.lastError message>' }
+//
+// Result cached for 60s so re-renders don't constantly poke the host. Pass
+// { force: true } in the message to bypass the cache.
+
+let nativeHostCheckCache = null; // { result, expiresAt }
+const NATIVE_HOST_CHECK_TTL_MS = 60000;
+const NATIVE_HOST_CHECK_TIMEOUT_MS = 5000;
+
+function checkNativeHost(force = false) {
+  const now = Date.now();
+  if (!force && nativeHostCheckCache && nativeHostCheckCache.expiresAt > now) {
+    return Promise.resolve(nativeHostCheckCache.result);
+  }
+
+  return new Promise((resolve) => {
+    let port;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { port && port.disconnect(); } catch (_) {}
+      nativeHostCheckCache = { result, expiresAt: Date.now() + NATIVE_HOST_CHECK_TTL_MS };
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      finish({ status: 'host_missing', error: 'Native host did not respond within ' + NATIVE_HOST_CHECK_TIMEOUT_MS + 'ms' });
+    }, NATIVE_HOST_CHECK_TIMEOUT_MS);
+
+    try {
+      port = chrome.runtime.connectNative('com.ytarchiver.downloader');
+    } catch (e) {
+      // Synchronous failure — extremely rare, but possible if the API itself is unavailable.
+      finish({ status: 'host_missing', error: e?.message || 'connectNative threw' });
+      return;
+    }
+
+    port.onMessage.addListener((msg) => {
+      if (msg && msg.type === 'check_result') {
+        if (msg.available) {
+          finish({ status: 'ok', version: (msg.version || '').toString().trim() });
+        } else {
+          finish({ status: 'ytdlp_missing' });
+        }
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      const err = chrome.runtime.lastError;
+      // If the host couldn't be launched at all (manifest not registered, script
+      // not executable, etc.), Chrome surfaces the error here without a prior
+      // onMessage. Anything that arrives before finish() means the host was
+      // there; this branch only fires for the "not installed" case.
+      finish({
+        status: 'host_missing',
+        error: err?.message || 'Native host disconnected without a response',
+      });
+    });
+
+    try {
+      port.postMessage({ action: 'check' });
+    } catch (e) {
+      finish({ status: 'host_missing', error: e?.message || 'postMessage failed' });
+    }
+  });
+}
+
 // ─── Video Download (via yt-dlp native messaging) ───
 
 function downloadVideo() {
@@ -766,7 +930,13 @@ function downloadVideo() {
           });
           break;
         case 'status':
-          // Status messages (merging, starting, etc.)
+          // Forward yt-dlp status updates to the panel so the Video step shows
+          // something meaningful during phases that have no percent (startup,
+          // post-download merge).
+          broadcastToSidePanel({
+            type: 'VIDEO_DOWNLOAD_STATUS',
+            data: { message: message.message || '' },
+          });
           break;
         case 'complete':
           archiveSteps.video = 'complete';
@@ -1024,22 +1194,31 @@ async function exportCommentScreenshots(theme = 'dark') {
     img: m.author_profile_image,
   }));
 
-  // Create offscreen document
+  // Single try/finally so the offscreen document is always closed, including
+  // when createDocument itself throws (previously it leaked on error and the
+  // next export saw "Document already exists" and got stuck).
+  let offscreenOpen = false;
   try {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen/offscreen.html',
-      reasons: ['DOM_PARSER'],
-      justification: 'Render comment screenshots with html2canvas',
-    });
-  } catch (e) {
-    // Already exists — that's fine
-    if (!e.message?.includes('already exists')) {
-      broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'Failed to create offscreen document: ' + e.message } });
-      return;
+    try {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen/offscreen.html',
+        reasons: ['DOM_PARSER'],
+        justification: 'Render comment screenshots with html2canvas',
+      });
+      offscreenOpen = true;
+    } catch (e) {
+      if (e.message?.includes('already exists')) {
+        // A prior invocation left it open — adopt it so we close it in the finally.
+        offscreenOpen = true;
+      } else {
+        broadcastToSidePanel({
+          type: 'SCREENSHOT_ERROR',
+          data: { error: 'Failed to create offscreen document: ' + e.message },
+        });
+        return;
+      }
     }
-  }
 
-  try {
     const result = await chrome.runtime.sendMessage({
       type: 'RENDER_COMMENT_SCREENSHOTS',
       data: { comments, chat, theme, folderPrefix: prefix, dateStr: getVideoDateStr() },
@@ -1067,7 +1246,9 @@ async function exportCommentScreenshots(theme = 'dark') {
     console.error('[YT Archiver] exportCommentScreenshots error:', e);
     broadcastToSidePanel({ type: 'SCREENSHOT_ERROR', data: { error: 'Screenshot export failed: ' + e.message } });
   } finally {
-    chrome.offscreen.closeDocument().catch(() => {});
+    if (offscreenOpen) {
+      try { await chrome.offscreen.closeDocument(); } catch (_) {}
+    }
   }
 }
 
@@ -1151,7 +1332,18 @@ async function exportAll(theme = 'dark', selected = {}) {
 }
 
 function sanitizeFilename(name) {
-  return name.replace(/[<>:"/\\|?*'`!\x00-\x1f]/g, '_').replace(/\s+/g, '_').substring(0, 200);
+  // Strip path/shell-unsafe chars and collapse whitespace
+  let out = String(name).replace(/[<>:"/\\|?*'`!\x00-\x1f]/g, '_').replace(/\s+/g, '_');
+  // Trim trailing dots/spaces — Windows silently drops them and ends up with the
+  // wrong name; doing it ourselves keeps cross-platform behavior consistent.
+  out = out.replace(/[. _]+$/g, '');
+  // NTFS reserved device names: prefix with underscore so they become a regular
+  // filename. Match base name only, case-insensitive, with any extension.
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+  if (reserved.test(out)) out = '_' + out;
+  // Empty after sanitization → fallback so we never produce a literal "" path
+  if (!out) out = 'unnamed';
+  return out.substring(0, 200);
 }
 
 function getVideoDateStr() {

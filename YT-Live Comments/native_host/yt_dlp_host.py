@@ -9,18 +9,49 @@ import os
 import re
 import signal
 import traceback
+import pathlib
 
-# Debug log to help diagnose issues
-DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'debug.log')
+# Debug log to help diagnose issues. We try several locations because Chrome's
+# native-messaging child processes on macOS may not be able to write inside
+# ~/Documents (TCC tightens that on recent OS releases). The first writable
+# location wins; if none works, debug() becomes a no-op rather than crashing
+# the host before it can respond to Chrome.
+def _pick_debug_log():
+    candidates = [
+        os.path.join(os.path.expanduser('~/Library/Logs/com.ytarchiver.downloader'), 'debug.log'),
+        os.path.join(os.path.expanduser('~'), '.cache', 'com.ytarchiver.downloader', 'debug.log'),
+        os.path.join('/tmp', 'com.ytarchiver.downloader.log'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'debug.log'),
+    ]
+    for path in candidates:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'a') as f:
+                f.write('')
+            return path
+        except Exception:
+            continue
+    return None
+
+DEBUG_LOG = _pick_debug_log()
 
 def debug(msg):
-    with open(DEBUG_LOG, 'a') as f:
-        f.write(msg + '\n')
-        f.flush()
+    # Never crash the host on logging failures.
+    if not DEBUG_LOG:
+        return
+    try:
+        with open(DEBUG_LOG, 'a') as f:
+            f.write(msg + '\n')
+            f.flush()
+    except Exception:
+        pass
 
 debug('--- Host started, PID=%d ---' % os.getpid())
+debug('DEBUG_LOG=%s' % DEBUG_LOG)
 debug('PATH=' + os.environ.get('PATH', '(unset)'))
 debug('argv=' + repr(sys.argv))
+debug('cwd=' + os.getcwd())
+debug('python=' + sys.executable + ' ' + sys.version.replace('\n', ' '))
 
 # Chrome launches native hosts with minimal PATH; add common locations
 for p in ['/opt/homebrew/bin', '/usr/local/bin',
@@ -70,10 +101,37 @@ signal.signal(signal.SIGINT, cleanup)
 def download_video(video_url, output_dir, title, max_quality='1080'):
     global ytdlp_process
 
-    output_dir = os.path.expanduser(output_dir)
+    # Resolve and confine output_dir to the user's home directory.
+    # Prevents a malicious sender from writing to arbitrary paths via "../../etc" tricks.
+    expanded = os.path.expanduser(output_dir)
+    try:
+        real_out = pathlib.Path(expanded).resolve(strict=False)
+        home_real = pathlib.Path(os.path.expanduser('~')).resolve(strict=False)
+    except Exception as e:
+        send_message({'type': 'error', 'message': 'Invalid outputDir: %s' % e})
+        return
+    try:
+        real_out.relative_to(home_real)
+    except ValueError:
+        send_message({
+            'type': 'error',
+            'message': 'outputDir must be inside the home directory (got: %s)' % real_out,
+        })
+        return
+
+    output_dir = str(real_out)
     os.makedirs(output_dir, exist_ok=True)
 
-    output_template = os.path.join(output_dir, title + '.%(ext)s')
+    # Strip path separators from title so it can't escape output_dir via the template.
+    safe_title = re.sub(r'[\\/]+', '_', title or 'video').strip() or 'video'
+    output_template = os.path.join(output_dir, safe_title + '.%(ext)s')
+
+    # Reject obviously malformed video URLs early — yt-dlp accepts URLs starting
+    # with '-' as flag-like inputs in some shells; we never use shell=True, but
+    # guard anyway in case the caller sends junk.
+    if not isinstance(video_url, str) or not video_url.startswith(('http://', 'https://')):
+        send_message({'type': 'error', 'message': 'videoUrl must be an http(s) URL'})
+        return
 
     # Prefer H.264+AAC for universal playback (QuickTime, browsers, HTML <video>)
     # Falls back to VP9/Opus if H.264 not available
