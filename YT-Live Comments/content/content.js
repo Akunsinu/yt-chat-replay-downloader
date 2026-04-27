@@ -5,6 +5,16 @@
 (function () {
   'use strict';
 
+  // Idempotency guard: if the extension is reloaded while a YouTube tab is open,
+  // Chrome re-injects the content script into the same document. The previous
+  // listener becomes orphaned (its extension context is invalidated) but stays
+  // attached. Skip re-running the IIFE so we don't pile on duplicate handlers.
+  if (window.__ytArchiverContentLoaded) {
+    console.log('[YT Archiver] Content script already loaded, skipping re-init');
+    return;
+  }
+  window.__ytArchiverContentLoaded = true;
+
   let lastVideoId = null;
   let fetchAbortController = null;
   let isFetching = false;
@@ -323,27 +333,72 @@
     if (!ytInitialData) return null;
     try {
       const contents = ytInitialData?.contents?.twoColumnWatchNextResults?.results?.results?.contents;
-      if (!contents) return null;
+      let commentsDisabled = false;
+      let sectionsScanned = 0;
+      let continuationItemsSeen = 0;
 
-      for (const content of contents) {
-        const section = content.itemSectionRenderer;
-        if (!section) continue;
+      if (contents) {
+        for (const content of contents) {
+          const section = content.itemSectionRenderer;
+          if (!section) continue;
+          sectionsScanned++;
 
-        // Look for the comments section
-        const sectionContents = section.contents;
-        if (!sectionContents) continue;
+          // Heuristic: the comments section is identified by either a
+          // sectionIdentifier of "comment-item-section" or by containing a
+          // continuationItemRenderer with a comments-shaped token.
+          const sectionContents = section.contents;
+          if (!sectionContents) continue;
 
-        for (const item of sectionContents) {
-          if (item.continuationItemRenderer) {
-            const token = item.continuationItemRenderer.continuationEndpoint?.continuationCommand?.token;
-            if (token) return token;
-          }
-          if (item.messageRenderer) {
-            // Comments disabled
-            continue;
+          for (const item of sectionContents) {
+            if (item.continuationItemRenderer) {
+              continuationItemsSeen++;
+              // Use the helper that handles all 4 paths including YouTube's
+              // newer commandExecutorCommand wrapping (introduced 2025).
+              const token = extractContinuationFromItem(item.continuationItemRenderer);
+              if (token) return token;
+            }
+            if (item.messageRenderer || item.errorMessageRenderer) {
+              commentsDisabled = true;
+            }
           }
         }
       }
+
+      // Fallback: walk engagementPanels — some watch pages now expose comments
+      // through an engagementPanelSectionListRenderer with targetId
+      // "engagement-panel-comments-section" instead of inline itemSectionRenderer.
+      const panels = ytInitialData?.engagementPanels || [];
+      for (const panel of panels) {
+        const sl = panel?.engagementPanelSectionListRenderer;
+        if (!sl) continue;
+        const target = sl.targetId || sl.panelIdentifier || '';
+        if (!String(target).toLowerCase().includes('comment')) continue;
+
+        // The comments panel often defers loading via a continuationItemRenderer
+        // inside content.sectionListRenderer.contents[].itemSectionRenderer.contents[]
+        const stack = [sl.content];
+        while (stack.length) {
+          const node = stack.pop();
+          if (!node || typeof node !== 'object') continue;
+          if (node.continuationItemRenderer) {
+            const token = extractContinuationFromItem(node.continuationItemRenderer);
+            if (token) {
+              console.log('[YT Archiver] comments token via engagementPanels');
+              return token;
+            }
+          }
+          for (const v of Object.values(node)) {
+            if (Array.isArray(v)) stack.push(...v);
+            else if (v && typeof v === 'object') stack.push(v);
+          }
+        }
+      }
+
+      console.log('[YT Archiver] comments token not found.',
+        'sectionsScanned:', sectionsScanned,
+        ', continuationItemsSeen:', continuationItemsSeen,
+        ', commentsDisabled:', commentsDisabled,
+        ', engagementPanels:', panels.length);
     } catch (e) {
       console.error('[YT Archiver] Error extracting comments continuation:', e);
     }
@@ -390,6 +445,12 @@
     const replyContinuations = []; // { token, parentCommentId }
     let isFirstPage = true;
     let pageNum = 0;
+    // Rate-limit backoff: starts at 10s, doubles to a 60s cap on repeated 429s,
+    // resets after any successful page. Replaces the previous flat 30s sleep,
+    // which was both too aggressive when YouTube was angry and unnecessarily slow
+    // when it wasn't.
+    let rateLimitBackoffMs = 10000;
+    const rateLimitMaxMs = 60000;
 
     // Phase 1: Fetch top-level comments
     while (continuation && isFetchingComments) {
@@ -416,6 +477,7 @@
         }
 
         retryCount = 0;
+        rateLimitBackoffMs = 10000;
         const { comments, nextContinuation, replyTokens } = result;
 
         topLevelCount += comments.length;
@@ -447,13 +509,15 @@
         if (e.message?.includes('429') || e.message?.includes('rate')) {
           chrome.runtime.sendMessage({
             type: 'COMMENTS_RATE_LIMITED',
+            data: { backoffMs: rateLimitBackoffMs },
           }).catch(() => {});
           try {
-            await abortableSleep(30000, commentsFetchAbortController.signal);
+            await abortableSleep(rateLimitBackoffMs, commentsFetchAbortController.signal);
           } catch (abortErr) {
             isFetchingComments = false;
             return;
           }
+          rateLimitBackoffMs = Math.min(rateLimitBackoffMs * 2, rateLimitMaxMs);
           continue;
         }
 
@@ -592,10 +656,15 @@
     try {
       // Build entity map from frameworkUpdates (new YouTube format)
       const entityMap = {};
+      // Reverse index: commentId → commentEntityPayload, populated alongside entityMap
+      // so the parseCommentFromEntity fallback path is O(1) instead of O(n) per miss.
+      const commentIdIndex = {};
       const mutations = data?.frameworkUpdates?.entityBatchUpdate?.mutations || [];
       for (const mutation of mutations) {
         if (mutation.entityKey && mutation.payload) {
           entityMap[mutation.entityKey] = mutation.payload;
+          const cid = mutation.payload.commentEntityPayload?.properties?.commentId;
+          if (cid) commentIdIndex[cid] = mutation.payload.commentEntityPayload;
         }
       }
       const hasEntityStore = mutations.length > 0;
@@ -669,7 +738,7 @@
             // New format: commentViewModel + entity store
             const vm = thread.commentViewModel?.commentViewModel;
             if (vm && hasEntityStore) {
-              parsed = parseCommentFromEntity(vm, entityMap);
+              parsed = parseCommentFromEntity(vm, entityMap, commentIdIndex);
             }
 
             // Old format fallback: comment.commentRenderer
@@ -797,7 +866,7 @@
   }
 
   // New YouTube format: extract comment from entity store via commentViewModel keys
-  function parseCommentFromEntity(vm, entityMap) {
+  function parseCommentFromEntity(vm, entityMap, commentIdIndex = null) {
     if (!vm) return null;
 
     const commentId = vm.commentId || '';
@@ -814,15 +883,9 @@
       // toolbarStateKey points to engagementToolbarStateEntityPayload, not comment entity
       // But we can use it as a clue to find nearby entities
     }
-    // Fallback: try to find by iterating entities matching commentId
-    if (!entity) {
-      for (const key of Object.keys(entityMap)) {
-        const ce = entityMap[key].commentEntityPayload;
-        if (ce?.properties?.commentId === commentId) {
-          entity = ce;
-          break;
-        }
-      }
+    // Fallback: O(1) reverse-index lookup by commentId
+    if (!entity && commentId && commentIdIndex && commentIdIndex[commentId]) {
+      entity = commentIdIndex[commentId];
     }
 
     if (!entity) {
@@ -1106,6 +1169,8 @@
     let continuation = initialContinuation;
     let retryCount = 0;
     const maxRetries = 3;
+    let rateLimitBackoffMs = 10000;
+    const rateLimitMaxMs = 60000;
 
     while (continuation && isFetching) {
       try {
@@ -1126,6 +1191,7 @@
         }
 
         retryCount = 0;
+        rateLimitBackoffMs = 10000;
         const { messages, nextContinuation } = result;
 
         if (messages.length > 0) {
@@ -1157,13 +1223,15 @@
         if (e.message?.includes('429') || e.message?.includes('rate')) {
           chrome.runtime.sendMessage({
             type: 'FETCH_PAGE_RATE_LIMITED',
+            data: { backoffMs: rateLimitBackoffMs },
           }).catch(() => {});
           try {
-            await abortableSleep(30000, fetchAbortController.signal);
+            await abortableSleep(rateLimitBackoffMs, fetchAbortController.signal);
           } catch (abortErr) {
             isFetching = false;
             return;
           }
+          rateLimitBackoffMs = Math.min(rateLimitBackoffMs * 2, rateLimitMaxMs);
           continue;
         }
 

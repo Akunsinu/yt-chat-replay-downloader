@@ -34,8 +34,8 @@ function setVideoInfo(data) {
   const caps = [];
   if (data.chatContinuationToken) caps.push('Live Chat');
   if (data.commentsContinuationToken) caps.push('Comments');
-  if (data.hasStreams) {
-    const summary = data.streamingSummary;
+  if (data.videoId) {
+    const summary = data.hasStreams && data.streamingSummary;
     caps.push(summary ? `Video (${summary.bestVideoQuality})` : 'Video');
   }
   if (caps.length > 0) {
@@ -90,8 +90,49 @@ function updateStepUI(steps) {
     }
   }
 
+  // Sync the video progress bar with the step state. Anything other than
+  // 'downloading' should hide it; 'downloading' before the first percent
+  // arrives shows an indeterminate pulse.
+  if (steps.video === 'downloading') {
+    const fill = document.getElementById('step-progress-video-fill');
+    const wasShown = !document.getElementById('step-progress-video')?.classList.contains('hidden');
+    if (!wasShown) showVideoProgress({ indeterminate: true });
+    else if (fill && !fill.style.width) showVideoProgress({ indeterminate: true });
+  } else {
+    hideVideoProgress();
+  }
+
   updateButtons();
   updateExportOptions();
+}
+
+// ─── Video progress bar helpers ───
+
+function showVideoProgress({ percent = null, indeterminate = false } = {}) {
+  const wrap = document.getElementById('step-progress-video');
+  const fill = document.getElementById('step-progress-video-fill');
+  if (!wrap || !fill) return;
+  wrap.classList.remove('hidden');
+  if (percent != null) {
+    fill.classList.remove('indeterminate');
+    fill.style.marginLeft = '';
+    fill.style.width = Math.max(0, Math.min(100, percent)) + '%';
+  } else if (indeterminate) {
+    fill.classList.add('indeterminate');
+    fill.style.width = '';
+    fill.style.marginLeft = '';
+  }
+}
+
+function hideVideoProgress() {
+  const wrap = document.getElementById('step-progress-video');
+  const fill = document.getElementById('step-progress-video-fill');
+  if (wrap) wrap.classList.add('hidden');
+  if (fill) {
+    fill.classList.remove('indeterminate');
+    fill.style.width = '0%';
+    fill.style.marginLeft = '';
+  }
 }
 
 function getCompleteText(stepName) {
@@ -142,8 +183,11 @@ function updateButtons() {
     !currentVideoData?.commentsContinuationToken || steps.comments === 'fetching');
   chatBtn.classList.toggle('hidden',
     !currentVideoData?.chatContinuationToken || steps.liveChat === 'fetching');
+  // yt-dlp handles its own URL resolution — show button whenever there's a videoId.
+  // hasStreams only reflects whether direct (signature-free) URLs were exposed in the page,
+  // which is increasingly rare on YouTube and unrelated to whether yt-dlp can download.
   videoBtn.classList.toggle('hidden',
-    !currentVideoData?.hasStreams || steps.video === 'downloading');
+    !currentVideoData?.videoId || steps.video === 'downloading');
 }
 
 function updateExportOptions() {
@@ -180,6 +224,95 @@ function toggleExportOption(el, enabled) {
     if (input) input.disabled = true;
   }
 }
+
+// ─── Setup status (yt-dlp + native host) ───
+
+const SETUP_CLASSES = ['setup-ok', 'setup-warn', 'setup-error', 'setup-checking'];
+
+function applySetupStatus({ klass, label, summary, showSteps }) {
+  const section = document.getElementById('setup-status');
+  const labelEl = document.getElementById('setup-label');
+  const summaryEl = document.getElementById('setup-summary');
+  const stepsEl = document.getElementById('setup-install-steps');
+  if (!section) return;
+
+  SETUP_CLASSES.forEach(c => section.classList.remove(c));
+  section.classList.add(klass);
+  labelEl.textContent = label;
+  summaryEl.textContent = summary || '';
+  stepsEl.classList.toggle('hidden', !showSteps);
+}
+
+function setSetupExpanded(expanded) {
+  const details = document.getElementById('setup-details');
+  const toggle = document.getElementById('btn-setup-toggle');
+  details.classList.toggle('hidden', !expanded);
+  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  toggle.textContent = expanded ? 'Hide' : 'Details';
+}
+
+async function runSetupCheck({ force = false, autoExpandOnProblem = false } = {}) {
+  applySetupStatus({
+    klass: 'setup-checking',
+    label: 'Checking video downloader…',
+    summary: '',
+    showSteps: false,
+  });
+
+  let result;
+  try {
+    result = await chrome.runtime.sendMessage({ type: 'CHECK_NATIVE_HOST', force });
+  } catch (e) {
+    result = { status: 'host_missing', error: e?.message || 'No response from background worker' };
+  }
+
+  if (!result || typeof result !== 'object') {
+    result = { status: 'host_missing', error: 'Empty response from background worker' };
+  }
+
+  if (result.status === 'ok') {
+    const v = result.version ? ` (yt-dlp ${result.version})` : '';
+    applySetupStatus({
+      klass: 'setup-ok',
+      label: `Video downloads ready${v}`,
+      summary: 'yt-dlp is installed and the native messaging host is reachable. Video downloads will work.',
+      showSteps: false,
+    });
+    // Stay collapsed when everything works.
+    return result;
+  }
+
+  if (result.status === 'ytdlp_missing') {
+    applySetupStatus({
+      klass: 'setup-warn',
+      label: 'yt-dlp not found on PATH',
+      summary: 'The native messaging host is registered, but it could not find the yt-dlp binary. Install it (step 1) and re-check.',
+      showSteps: true,
+    });
+  } else {
+    // host_missing or anything unexpected
+    applySetupStatus({
+      klass: 'setup-warn',
+      label: 'Video downloader not configured',
+      summary: result.error
+        ? `Native messaging host unreachable: ${result.error}`
+        : 'Native messaging host is not registered yet.',
+      showSteps: true,
+    });
+  }
+
+  if (autoExpandOnProblem) setSetupExpanded(true);
+  return result;
+}
+
+document.getElementById('btn-setup-toggle').addEventListener('click', () => {
+  const details = document.getElementById('setup-details');
+  setSetupExpanded(details.classList.contains('hidden'));
+});
+
+document.getElementById('btn-setup-recheck').addEventListener('click', () => {
+  runSetupCheck({ force: true });
+});
 
 // ─── Initialize ───
 
@@ -356,24 +489,41 @@ chrome.runtime.onMessage.addListener((message) => {
           statusEl.textContent = 'Downloaded';
         }
       }
+      hideVideoProgress();
       break;
     }
 
     case 'VIDEO_DOWNLOAD_ERROR':
       showError(message.data?.error || 'Error downloading video');
+      hideVideoProgress();
+      // The download path failing is the strongest signal that the setup state
+      // changed (or was never right). Force a re-check so the panel reflects
+      // reality and the install steps appear if needed.
+      runSetupCheck({ force: true, autoExpandOnProblem: true });
       break;
+
+    case 'VIDEO_DOWNLOAD_STATUS': {
+      // Pre-download / merging phases — yt-dlp doesn't emit a percent here,
+      // so use the indeterminate animation and surface the message text.
+      const msg = message.data?.message || '';
+      const statusEl = document.getElementById('step-status-video');
+      if (statusEl && msg) statusEl.textContent = msg;
+      showVideoProgress({ indeterminate: true });
+      break;
+    }
 
     case 'VIDEO_DOWNLOAD_PROGRESS': {
       const statusEl = document.getElementById('step-status-video');
-      if (statusEl) {
-        const d = message.data;
-        if (d.percent != null) {
-          let text = `${d.percent.toFixed(1)}%`;
-          if (d.totalSize) text += ` of ${d.totalSize}`;
-          if (d.speed) text += ` at ${d.speed}`;
-          if (d.eta && d.eta !== 'Unknown') text += ` ETA ${d.eta}`;
-          statusEl.textContent = text;
-        }
+      const d = message.data;
+      if (statusEl && d.percent != null) {
+        let text = `${d.percent.toFixed(1)}%`;
+        if (d.totalSize) text += ` of ${d.totalSize}`;
+        if (d.speed) text += ` at ${d.speed}`;
+        if (d.eta && d.eta !== 'Unknown') text += ` ETA ${d.eta}`;
+        statusEl.textContent = text;
+      }
+      if (d?.percent != null) {
+        showVideoProgress({ percent: d.percent });
       }
       break;
     }
@@ -394,6 +544,11 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'SCREENSHOT_ERROR':
       hideScreenshotProgress();
       showError(message.data?.error || 'Screenshot export failed');
+      break;
+
+    case 'STORAGE_WARNING':
+    case 'MEMORY_WARNING':
+      if (message.data?.message) showError(message.data.message);
       break;
   }
 });
@@ -497,3 +652,6 @@ document.getElementById('btn-download-selected').addEventListener('click', () =>
 
 // ─── Start ───
 init();
+// Auto-expand the install help if it isn't set up yet — first-run users see
+// the steps without needing to click "Details".
+runSetupCheck({ autoExpandOnProblem: true });

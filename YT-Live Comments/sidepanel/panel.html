@@ -9,8 +9,49 @@
 <body>
   <div class="panel">
     <header class="panel-header">
-      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.0.3</span></h1>
+      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.1.0</span></h1>
     </header>
+
+    <!-- Setup status (always visible, regardless of page) -->
+    <section id="setup-status" class="setup-section setup-checking">
+      <div class="setup-row">
+        <span class="setup-dot"></span>
+        <span class="setup-label" id="setup-label">Checking video downloader…</span>
+        <button id="btn-setup-toggle" class="setup-toggle" type="button" aria-expanded="false">Details</button>
+      </div>
+      <div id="setup-details" class="setup-details hidden">
+        <p class="setup-summary" id="setup-summary"></p>
+        <div id="setup-install-steps" class="setup-install-steps hidden">
+          <p><strong>One-time setup (macOS):</strong></p>
+          <ol class="setup-steps">
+            <li>
+              Install yt-dlp via Homebrew (skip if already installed):
+              <pre class="setup-code">brew install yt-dlp</pre>
+            </li>
+            <li>
+              Register the native messaging host so Chrome can launch yt-dlp on this extension's behalf. From the extension folder:
+              <pre class="setup-code">bash install_host.sh</pre>
+              When prompted, paste your extension ID from <code>chrome://extensions</code> (enable Developer mode to see it).
+            </li>
+            <li>Reload this extension at <code>chrome://extensions</code>, then click <em>Re-check</em> below.</li>
+          </ol>
+          <p class="setup-hint">
+            Don't have Homebrew? Install it from <span class="setup-link">brew.sh</span> first.
+            Other archive features (metadata, comments, live chat, screenshots) work without yt-dlp — only the video file download requires it.
+          </p>
+          <p class="setup-hint">
+            <strong>Note:</strong> the installer copies the host script into
+            <code>~/Library/Application Support/com.ytarchiver.downloader/</code>.
+            macOS Sonoma and later block Chrome's native-host child processes
+            from reading files in <code>~/Documents</code>, <code>~/Desktop</code>,
+            and <code>~/Downloads</code> (TCC), so the host can't live there.
+            Logs are at <code>~/Library/Logs/com.ytarchiver.downloader/</code>
+            if you ever need to debug.
+          </p>
+        </div>
+        <button id="btn-setup-recheck" class="btn btn-small btn-secondary" type="button">Re-check</button>
+      </div>
+    </section>
 
     <!-- Not on YouTube -->
     <section id="state-not-youtube" class="state-section hidden">
@@ -52,6 +93,11 @@
           <div class="step-info">
             <div class="step-label">Video</div>
             <div class="step-status" id="step-status-video">Pending</div>
+            <div class="step-progress hidden" id="step-progress-video">
+              <div class="step-progress-bar">
+                <div class="step-progress-fill" id="step-progress-video-fill"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
