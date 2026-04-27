@@ -9,7 +9,7 @@
 <body>
   <div class="panel">
     <header class="panel-header">
-      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.1.0</span></h1>
+      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.1.1</span></h1>
     </header>
 
     <!-- Setup status (always visible, regardless of page) -->
@@ -22,7 +22,10 @@
       <div id="setup-details" class="setup-details hidden">
         <p class="setup-summary" id="setup-summary"></p>
         <div id="setup-install-steps" class="setup-install-steps hidden">
-          <p><strong>One-time setup (macOS):</strong></p>
+          <div class="setup-actions-row">
+            <p style="margin:0;"><strong>One-time setup (macOS):</strong></p>
+            <button id="btn-show-walkthrough" class="setup-walkthrough-btn" type="button">Show me how →</button>
+          </div>
           <ol class="setup-steps">
             <li>
               Install yt-dlp via Homebrew (skip if already installed):
@@ -35,19 +38,6 @@
             </li>
             <li>Reload this extension at <code>chrome://extensions</code>, then click <em>Re-check</em> below.</li>
           </ol>
-          <p class="setup-hint">
-            Don't have Homebrew? Install it from <span class="setup-link">brew.sh</span> first.
-            Other archive features (metadata, comments, live chat, screenshots) work without yt-dlp — only the video file download requires it.
-          </p>
-          <p class="setup-hint">
-            <strong>Note:</strong> the installer copies the host script into
-            <code>~/Library/Application Support/com.ytarchiver.downloader/</code>.
-            macOS Sonoma and later block Chrome's native-host child processes
-            from reading files in <code>~/Documents</code>, <code>~/Desktop</code>,
-            and <code>~/Downloads</code> (TCC), so the host can't live there.
-            Logs are at <code>~/Library/Logs/com.ytarchiver.downloader/</code>
-            if you ever need to debug.
-          </p>
         </div>
         <button id="btn-setup-recheck" class="btn btn-small btn-secondary" type="button">Re-check</button>
       </div>
@@ -173,6 +163,202 @@
       <!-- Re-check -->
       <button id="btn-recheck" class="btn btn-small btn-secondary">Re-check Page</button>
     </section>
+  </div>
+
+  <!-- Setup walkthrough modal -->
+  <div id="walkthrough-overlay" class="walkthrough-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="walkthrough-title">
+    <div class="walkthrough-modal">
+      <header class="walkthrough-header">
+        <h2 id="walkthrough-title">Setup walkthrough</h2>
+        <button id="btn-walkthrough-close" class="walkthrough-close" type="button" aria-label="Close walkthrough">×</button>
+      </header>
+
+      <div class="walkthrough-step-indicator">
+        <span class="walkthrough-dot active" data-step="0"></span>
+        <span class="walkthrough-dot" data-step="1"></span>
+        <span class="walkthrough-dot" data-step="2"></span>
+        <span class="walkthrough-dot" data-step="3"></span>
+        <span class="walkthrough-dot" data-step="4"></span>
+      </div>
+
+      <div class="walkthrough-body">
+        <!-- STEP 1: Install Homebrew -->
+        <section class="walkthrough-step active" data-step="0">
+          <div class="walkthrough-step-num">Step 1 of 5</div>
+          <h3>Install Homebrew</h3>
+          <p class="walkthrough-hint" style="margin-bottom:10px;">Already have Homebrew? Skip ahead — click the next dot or hit <strong>Next →</strong>.</p>
+
+          <ol class="walkthrough-mini-steps">
+            <li>Open <strong>Terminal</strong> (Cmd+Space → "Terminal" → Enter).</li>
+            <li>Copy the command below, paste it into Terminal, and hit <strong>Enter</strong>. It will ask for your Mac password partway through — that's normal.</li>
+          </ol>
+
+          <div class="mock-terminal" data-copy='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'>
+            <div class="mock-terminal-bar">
+              <span class="mock-tl-btn red"></span>
+              <span class="mock-tl-btn yellow"></span>
+              <span class="mock-tl-btn green"></span>
+              <span class="mock-tl-title">Terminal</span>
+              <button class="mock-copy-btn" type="button" data-copy-target='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'>Copy</button>
+            </div>
+            <div class="mock-terminal-body">
+              <div class="mock-line"><span class="mock-prompt">$</span> /bin/bash -c <span class="mock-string">"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"</span></div>
+              <div class="mock-line mock-output">==&gt; Checking for `sudo` access (which may request your password)...</div>
+              <div class="mock-line mock-output">Password: <span class="mock-string">●●●●●●●●</span></div>
+              <div class="mock-line mock-output">==&gt; Downloading and installing Homebrew...</div>
+              <div class="mock-line mock-output mock-success">==&gt; Installation successful!</div>
+              <div class="mock-line"><span class="mock-prompt">$</span> <span class="mock-cursor">▍</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- STEP 2: Install yt-dlp -->
+        <section class="walkthrough-step" data-step="1">
+          <div class="walkthrough-step-num">Step 2 of 5</div>
+          <h3>Install yt-dlp</h3>
+
+          <ol class="walkthrough-mini-steps">
+            <li>In <strong>Finder</strong>, locate the <code>YT-Live Comments</code> folder.</li>
+            <li>Right-click it → <strong>New Terminal at Folder</strong>.</li>
+            <li>Run the command below in that Terminal window.</li>
+          </ol>
+
+          <div class="mock-terminal" data-copy="brew install yt-dlp">
+            <div class="mock-terminal-bar">
+              <span class="mock-tl-btn red"></span>
+              <span class="mock-tl-btn yellow"></span>
+              <span class="mock-tl-btn green"></span>
+              <span class="mock-tl-title">Terminal — YT-Live Comments</span>
+              <button class="mock-copy-btn" type="button" data-copy-target="brew install yt-dlp">Copy</button>
+            </div>
+            <div class="mock-terminal-body">
+              <div class="mock-line"><span class="mock-prompt">$</span> brew install yt-dlp</div>
+              <div class="mock-line mock-output">==&gt; Downloading yt-dlp...</div>
+              <div class="mock-line mock-output">==&gt; Pouring yt-dlp...</div>
+              <div class="mock-line mock-output mock-success">🍺  /opt/homebrew/Cellar/yt-dlp/2026.03.17: 23 files</div>
+              <div class="mock-line"><span class="mock-prompt">$</span> <span class="mock-cursor">▍</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- STEP 3: Find extension ID -->
+        <section class="walkthrough-step" data-step="2">
+          <div class="walkthrough-step-num">Step 3 of 5</div>
+          <h3>Find your extension ID</h3>
+          <p>Chrome assigns each extension a unique ID. The installer needs it so it can grant <em>only</em> this extension permission to talk to yt-dlp.</p>
+
+          <!-- chrome://extensions mockup -->
+          <div class="mock-chrome">
+            <div class="mock-chrome-bar">
+              <span class="mock-tl-btn red"></span>
+              <span class="mock-tl-btn yellow"></span>
+              <span class="mock-tl-btn green"></span>
+              <div class="mock-chrome-url">chrome://extensions</div>
+            </div>
+            <div class="mock-chrome-body">
+              <div class="mock-chrome-toolbar">
+                <span class="mock-chrome-title">Extensions</span>
+                <div class="mock-chrome-toggle-wrap">
+                  <span class="mock-chrome-toggle-label">Developer mode</span>
+                  <span class="mock-chrome-toggle on highlighted">
+                    <span class="mock-chrome-toggle-knob"></span>
+                  </span>
+                  <div class="mock-callout mock-callout-toggle">① Turn this on</div>
+                </div>
+              </div>
+              <div class="mock-ext-card">
+                <div class="mock-ext-icon">▶</div>
+                <div class="mock-ext-meta">
+                  <div class="mock-ext-name">YouTube Video Archiver</div>
+                  <div class="mock-ext-desc">Archive YouTube videos with metadata, comments, live chat…</div>
+                  <div class="mock-ext-id-row">
+                    <span class="mock-ext-id-label">ID:</span>
+                    <span class="mock-ext-id highlighted">kofmgaibpgeijecaiplbeggaifmkcdep</span>
+                    <div class="mock-callout mock-callout-id">② Copy this whole string</div>
+                  </div>
+                </div>
+                <div class="mock-ext-toggle">
+                  <span class="mock-chrome-toggle on"><span class="mock-chrome-toggle-knob"></span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p class="walkthrough-hint">
+            Open <code>chrome://extensions</code> in a new tab. Toggle <strong>Developer mode</strong> on (top-right). The ID is 32 lowercase letters under "YouTube Video Archiver." Select and copy it.
+          </p>
+        </section>
+
+        <!-- STEP 4: Run install_host.sh -->
+        <section class="walkthrough-step" data-step="3">
+          <div class="walkthrough-step-num">Step 4 of 5</div>
+          <h3>Register the host</h3>
+
+          <ol class="walkthrough-mini-steps">
+            <li>Copy this command and hit <strong>Enter</strong> in your same Terminal.</li>
+          </ol>
+
+          <div class="mock-terminal" data-copy="bash install_host.sh">
+            <div class="mock-terminal-bar">
+              <span class="mock-tl-btn red"></span>
+              <span class="mock-tl-btn yellow"></span>
+              <span class="mock-tl-btn green"></span>
+              <span class="mock-tl-title">Terminal — YT-Live Comments</span>
+              <button class="mock-copy-btn" type="button" data-copy-target="bash install_host.sh">Copy</button>
+            </div>
+            <div class="mock-terminal-body">
+              <div class="mock-line"><span class="mock-prompt">$</span> bash install_host.sh</div>
+              <div class="mock-line mock-output">=== YouTube Video Archiver - Native Host Setup ===</div>
+              <div class="mock-line mock-output">yt-dlp 2026.03.17</div>
+              <div class="mock-line mock-output">Python 3.9.6</div>
+              <div class="mock-line mock-output">&nbsp;</div>
+              <div class="mock-line mock-output">Enter your extension ID from chrome://extensions:</div>
+              <div class="mock-line"><span class="mock-prompt">&gt;</span> <span class="mock-id-paste">kofmgaibpgeijecaiplbeggaifmkcdep</span><span class="mock-cursor">▍</span></div>
+              <div class="mock-line mock-output mock-success">Native messaging host installed!</div>
+            </div>
+          </div>
+
+          <ol class="walkthrough-mini-steps" start="2">
+            <li>Paste your extension ID (from Step 3) and hit <strong>Enter</strong>.</li>
+          </ol>
+        </section>
+
+        <!-- STEP 5: Verify -->
+        <section class="walkthrough-step" data-step="4">
+          <div class="walkthrough-step-num">Step 5 of 5</div>
+          <h3>Verify it worked</h3>
+          <p>Reload the extension at <code>chrome://extensions</code>, then come back here and click <strong>Re-check</strong>.</p>
+
+          <!-- Mock setup badge: before & after -->
+          <div class="mock-badge-pair">
+            <div class="mock-badge-wrap">
+              <div class="mock-badge-label">Before</div>
+              <div class="mock-setup mock-setup-warn">
+                <span class="mock-setup-dot warn"></span>
+                <span class="mock-setup-text">Video downloader not configured</span>
+              </div>
+            </div>
+            <div class="mock-arrow">→</div>
+            <div class="mock-badge-wrap">
+              <div class="mock-badge-label">After</div>
+              <div class="mock-setup mock-setup-ok">
+                <span class="mock-setup-dot ok"></span>
+                <span class="mock-setup-text">Video downloads ready (yt-dlp 2026.03.17)</span>
+              </div>
+            </div>
+          </div>
+
+          <p class="walkthrough-hint">
+            If it still says "not configured" after Re-check, the most common cause is a typo in the extension ID. Re-run <code>install_host.sh</code> and double-check the ID.
+          </p>
+        </section>
+      </div>
+
+      <footer class="walkthrough-footer">
+        <button id="btn-walkthrough-prev" class="btn btn-small btn-secondary" type="button">← Back</button>
+        <button id="btn-walkthrough-next" class="btn btn-small btn-primary" type="button">Next →</button>
+      </footer>
+    </div>
   </div>
 
   <script src="panel.js"></script>

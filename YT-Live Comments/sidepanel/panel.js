@@ -314,6 +314,99 @@ document.getElementById('btn-setup-recheck').addEventListener('click', () => {
   runSetupCheck({ force: true });
 });
 
+// ─── Walkthrough modal ───
+
+const WALKTHROUGH_TOTAL_STEPS = 5;
+let walkthroughStep = 0;
+
+function setWalkthroughStep(i) {
+  walkthroughStep = Math.max(0, Math.min(WALKTHROUGH_TOTAL_STEPS - 1, i));
+
+  document.querySelectorAll('.walkthrough-step').forEach(el => {
+    el.classList.toggle('active', Number(el.dataset.step) === walkthroughStep);
+  });
+  document.querySelectorAll('.walkthrough-dot').forEach(el => {
+    el.classList.toggle('active', Number(el.dataset.step) === walkthroughStep);
+  });
+
+  const prevBtn = document.getElementById('btn-walkthrough-prev');
+  const nextBtn = document.getElementById('btn-walkthrough-next');
+  prevBtn.disabled = walkthroughStep === 0;
+  prevBtn.style.visibility = walkthroughStep === 0 ? 'hidden' : 'visible';
+  nextBtn.textContent = walkthroughStep === WALKTHROUGH_TOTAL_STEPS - 1 ? 'Done' : 'Next →';
+
+  // Reset scroll on step change so each step starts at the top.
+  document.querySelector('.walkthrough-body').scrollTop = 0;
+}
+
+function openWalkthrough() {
+  document.getElementById('walkthrough-overlay').classList.remove('hidden');
+  setWalkthroughStep(0);
+  document.body.style.overflow = 'hidden';
+}
+
+function closeWalkthrough() {
+  document.getElementById('walkthrough-overlay').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+document.getElementById('btn-show-walkthrough').addEventListener('click', openWalkthrough);
+document.getElementById('btn-walkthrough-close').addEventListener('click', closeWalkthrough);
+document.getElementById('btn-walkthrough-prev').addEventListener('click', () => setWalkthroughStep(walkthroughStep - 1));
+document.getElementById('btn-walkthrough-next').addEventListener('click', () => {
+  if (walkthroughStep === WALKTHROUGH_TOTAL_STEPS - 1) {
+    closeWalkthrough();
+    // Re-check immediately after closing — the user just finished setup.
+    runSetupCheck({ force: true });
+  } else {
+    setWalkthroughStep(walkthroughStep + 1);
+  }
+});
+
+// Click backdrop to close
+document.getElementById('walkthrough-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'walkthrough-overlay') closeWalkthrough();
+});
+
+// Click any dot to jump
+document.querySelectorAll('.walkthrough-dot').forEach(dot => {
+  dot.style.cursor = 'pointer';
+  dot.addEventListener('click', () => setWalkthroughStep(Number(dot.dataset.step)));
+});
+
+// Copy buttons inside terminal mockups. Each button has a `data-copy-target`
+// containing the exact command to copy (just the command, not the fake output).
+document.querySelectorAll('.mock-copy-btn').forEach(btn => {
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const text = btn.dataset.copyTarget || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const original = btn.textContent;
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = original;
+        btn.classList.remove('copied');
+      }, 1500);
+    } catch (err) {
+      console.error('[Panel] Copy failed:', err);
+      btn.textContent = 'Copy failed';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    }
+  });
+});
+
+// Esc to close, arrow keys to navigate
+document.addEventListener('keydown', (e) => {
+  const overlay = document.getElementById('walkthrough-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  if (e.key === 'Escape') closeWalkthrough();
+  else if (e.key === 'ArrowLeft' && walkthroughStep > 0) setWalkthroughStep(walkthroughStep - 1);
+  else if (e.key === 'ArrowRight' && walkthroughStep < WALKTHROUGH_TOTAL_STEPS - 1) setWalkthroughStep(walkthroughStep + 1);
+});
+
 // ─── Initialize ───
 
 async function init() {

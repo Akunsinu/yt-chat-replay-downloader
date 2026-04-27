@@ -431,6 +431,595 @@ input[type="checkbox"] {
 
 .setup-link { color: #3ea6ff; }
 
+/* Setup actions row (Show me how button) */
+.setup-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.setup-walkthrough-btn {
+  background: #3ea6ff;
+  color: #0f0f0f;
+  border: none;
+  border-radius: 14px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.setup-walkthrough-btn:hover { opacity: 0.92; }
+
+/* Walkthrough modal */
+.walkthrough-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 12px;
+  animation: walkthrough-fade 0.18s ease-out;
+}
+
+@keyframes walkthrough-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.walkthrough-modal {
+  background: #1a1a1a;
+  border: 1px solid #3f3f3f;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 460px;
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.walkthrough-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #3f3f3f;
+  flex-shrink: 0;
+}
+
+.walkthrough-header h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0;
+}
+
+.walkthrough-close {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.walkthrough-close:hover { color: #fff; }
+
+.walkthrough-step-indicator {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 0 4px;
+  flex-shrink: 0;
+}
+
+.walkthrough-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3f3f3f;
+  transition: background 0.2s, transform 0.2s;
+}
+
+.walkthrough-dot.active {
+  background: #3ea6ff;
+  transform: scale(1.3);
+}
+
+.walkthrough-body {
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.walkthrough-step {
+  display: none;
+}
+
+.walkthrough-step.active {
+  display: block;
+  animation: walkthrough-slide 0.2s ease-out;
+}
+
+@keyframes walkthrough-slide {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.walkthrough-step-num {
+  font-size: 10px;
+  color: #3ea6ff;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.walkthrough-step h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.walkthrough-step p {
+  font-size: 12px;
+  color: #ccc;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.walkthrough-hint {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 12px;
+}
+
+.walkthrough-hint code {
+  background: #0f0f0f;
+  border: 1px solid #3f3f3f;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: #f1f1f1;
+  user-select: all;
+}
+
+.walkthrough-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid #3f3f3f;
+  flex-shrink: 0;
+}
+
+/* Mini ordered list inside a walkthrough step */
+.walkthrough-mini-steps {
+  margin: 8px 0 12px 18px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.walkthrough-mini-steps li {
+  font-size: 12px;
+  color: #ccc;
+  line-height: 1.5;
+}
+
+.walkthrough-mini-steps code {
+  background: #0f0f0f;
+  border: 1px solid #3f3f3f;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: #f1f1f1;
+}
+
+.walkthrough-hint-inline {
+  display: inline-block;
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
+}
+
+/* Copy button on terminal mockups */
+.mock-copy-btn {
+  background: #3ea6ff;
+  color: #0f0f0f;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: auto;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.mock-copy-btn:hover  { opacity: 0.9; }
+.mock-copy-btn:active { transform: scale(0.96); }
+
+.mock-copy-btn.copied {
+  background: #4caf50;
+  color: #fff;
+}
+
+/* Once a copy button is present the title needs to make room — stop centering */
+.mock-terminal-bar .mock-tl-title {
+  margin-right: 0;
+  text-align: left;
+  padding-left: 6px;
+}
+
+/* Mock terminal */
+.mock-terminal {
+  background: #1e1e1e;
+  border-radius: 8px;
+  border: 1px solid #2d2d2d;
+  overflow: hidden;
+  margin: 4px 0 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.mock-terminal-bar {
+  background: linear-gradient(to bottom, #3a3a3a, #2a2a2a);
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.mock-tl-btn {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.mock-tl-btn.red    { background: #ff5f57; }
+.mock-tl-btn.yellow { background: #febc2e; }
+.mock-tl-btn.green  { background: #28c840; }
+
+.mock-tl-title {
+  flex: 1;
+  text-align: center;
+  font-size: 10px;
+  color: #aaa;
+  margin-right: 36px; /* offset for the buttons on the left */
+}
+
+.mock-terminal-body {
+  background: #1e1e1e;
+  padding: 10px 12px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #e8e8e8;
+  line-height: 1.55;
+}
+
+.mock-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mock-prompt {
+  color: #67d96f;
+  font-weight: 600;
+  user-select: none;
+  margin-right: 6px;
+}
+
+.mock-string  { color: #e0c068; }
+.mock-output  { color: #999; }
+.mock-success { color: #67d96f; }
+
+.mock-id-paste {
+  background: rgba(62, 166, 255, 0.18);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.mock-cursor {
+  color: #67d96f;
+  animation: mock-blink 1s steps(2) infinite;
+}
+
+@keyframes mock-blink {
+  50% { opacity: 0; }
+}
+
+/* Mock chrome://extensions */
+.mock-chrome {
+  background: #202124;
+  border-radius: 8px;
+  border: 1px solid #2d2d2d;
+  overflow: hidden;
+  margin: 4px 0 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.mock-chrome-bar {
+  background: #292a2d;
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.mock-chrome-url {
+  flex: 1;
+  background: #3c4043;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 10px;
+  color: #e8eaed;
+  margin-left: 6px;
+  font-family: 'SF Mono', Menlo, monospace;
+}
+
+.mock-chrome-body {
+  padding: 10px;
+}
+
+.mock-chrome-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #3c4043;
+  margin-bottom: 8px;
+}
+
+.mock-chrome-title {
+  font-size: 13px;
+  color: #e8eaed;
+  font-weight: 500;
+}
+
+.mock-chrome-toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.mock-chrome-toggle-label {
+  font-size: 11px;
+  color: #9aa0a6;
+}
+
+.mock-chrome-toggle {
+  width: 28px;
+  height: 14px;
+  background: #5f6368;
+  border-radius: 8px;
+  position: relative;
+  transition: background 0.2s;
+}
+
+.mock-chrome-toggle.on {
+  background: #8ab4f8;
+}
+
+.mock-chrome-toggle-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  transition: left 0.2s;
+}
+
+.mock-chrome-toggle.on .mock-chrome-toggle-knob {
+  left: 15px;
+  background: #1a73e8;
+}
+
+.mock-chrome-toggle.highlighted {
+  outline: 2px solid #3ea6ff;
+  outline-offset: 3px;
+  border-radius: 8px;
+  animation: mock-pulse 2s ease-in-out infinite;
+}
+
+@keyframes mock-pulse {
+  0%, 100% { outline-color: #3ea6ff; }
+  50%      { outline-color: #ffd54f; }
+}
+
+.mock-callout {
+  position: absolute;
+  background: #ffd54f;
+  color: #0f0f0f;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.mock-callout::after {
+  content: '';
+  position: absolute;
+  border-width: 5px;
+  border-style: solid;
+}
+
+.mock-callout-toggle {
+  top: 24px;
+  right: 0;
+}
+
+.mock-callout-toggle::after {
+  top: -10px;
+  right: 12px;
+  border-color: transparent transparent #ffd54f transparent;
+}
+
+.mock-ext-card {
+  background: #292a2d;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  position: relative;
+}
+
+.mock-ext-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #ff0000, #cc0000);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.mock-ext-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.mock-ext-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8eaed;
+  margin-bottom: 2px;
+}
+
+.mock-ext-desc {
+  font-size: 10px;
+  color: #9aa0a6;
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mock-ext-id-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-family: 'SF Mono', Menlo, monospace;
+  position: relative;
+}
+
+.mock-ext-id-label {
+  color: #9aa0a6;
+}
+
+.mock-ext-id {
+  color: #e8eaed;
+  background: #1a1a1a;
+  padding: 2px 5px;
+  border-radius: 3px;
+  user-select: all;
+}
+
+.mock-ext-id.highlighted {
+  outline: 2px solid #3ea6ff;
+  outline-offset: 1px;
+  animation: mock-pulse 2s ease-in-out infinite;
+}
+
+.mock-callout-id {
+  bottom: -28px;
+  left: 0;
+}
+
+.mock-callout-id::after {
+  top: -10px;
+  left: 14px;
+  border-color: transparent transparent #ffd54f transparent;
+}
+
+.mock-ext-toggle {
+  flex-shrink: 0;
+  padding-top: 4px;
+}
+
+/* Mock setup badge pair (before/after) */
+.mock-badge-pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.mock-badge-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.mock-badge-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.mock-setup {
+  background: #272727;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-left: 3px solid #555;
+}
+
+.mock-setup-warn { border-left-color: #ff9800; }
+.mock-setup-ok   { border-left-color: #4caf50; }
+
+.mock-setup-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mock-setup-dot.warn { background: #ff9800; }
+.mock-setup-dot.ok   { background: #4caf50; }
+
+.mock-setup-text {
+  font-size: 10px;
+  color: #ddd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mock-arrow {
+  color: #3ea6ff;
+  font-size: 18px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
 /* Inline step progress bar (used by video download) */
 .step-progress {
   margin-top: 6px;
