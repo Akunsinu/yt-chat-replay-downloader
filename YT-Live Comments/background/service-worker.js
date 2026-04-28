@@ -861,7 +861,12 @@ function checkNativeHost(force = false) {
     port.onMessage.addListener((msg) => {
       if (msg && msg.type === 'check_result') {
         if (msg.available) {
-          finish({ status: 'ok', version: (msg.version || '').toString().trim() });
+          finish({
+            status: 'ok',
+            version: (msg.version || '').toString().trim(),
+            ffmpegAvailable: !!msg.ffmpegAvailable,
+            ffmpegVersion: (msg.ffmpegVersion || '').toString().trim(),
+          });
         } else {
           finish({ status: 'ytdlp_missing' });
         }

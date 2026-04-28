@@ -33,10 +33,25 @@ fi
 # Check yt-dlp
 if ! command -v yt-dlp &> /dev/null; then
     echo "ERROR: yt-dlp not found. Install it with:"
-    echo "  brew install yt-dlp"
+    echo "  brew install yt-dlp ffmpeg"
     exit 1
 fi
 echo "yt-dlp $(yt-dlp --version)"
+
+# Check ffmpeg — warn but don't fail. yt-dlp downloads work without it but
+# get capped at 720p (single-file format) because we can't merge YouTube's
+# separate video and audio streams. Most users want HD, so flag this loudly.
+if ! command -v ffmpeg &> /dev/null; then
+    echo ""
+    echo "WARNING: ffmpeg not found."
+    echo "  Without ffmpeg, downloads are limited to 720p (single-file format)."
+    echo "  YouTube's HD streams are split into separate video and audio that"
+    echo "  need ffmpeg to merge. Install it with:"
+    echo "    brew install ffmpeg"
+    echo ""
+else
+    echo "ffmpeg $(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')"
+fi
 
 # Check python3 (Chrome will use /usr/bin/python3 — Apple-shipped one)
 if ! command -v python3 &> /dev/null; then

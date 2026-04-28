@@ -98,6 +98,28 @@ signal.signal(signal.SIGTERM, cleanup)
 signal.signal(signal.SIGINT, cleanup)
 
 
+def detect_ffmpeg():
+    """Return (available: bool, version: str|None). Used both at runtime to
+    decide which yt-dlp format selector to use, and by the `check` action to
+    surface ffmpeg status to the panel."""
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-version'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False, None
+        first_line = (result.stdout or '').splitlines()[:1]
+        version = first_line[0] if first_line else 'ffmpeg'
+        # `ffmpeg -version` prints "ffmpeg version N.N.N ..." — keep just the leading part
+        m = re.match(r'ffmpeg version (\S+)', version)
+        return True, (m.group(1) if m else version)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False, None
+    except Exception:
+        return False, None
+
+
 def download_video(video_url, output_dir, title, max_quality='1080'):
     global ytdlp_process
 
@@ -133,28 +155,40 @@ def download_video(video_url, output_dir, title, max_quality='1080'):
         send_message({'type': 'error', 'message': 'videoUrl must be an http(s) URL'})
         return
 
-    # Prefer H.264+AAC for universal playback (QuickTime, browsers, HTML <video>)
-    # Falls back to VP9/Opus if H.264 not available
-    fmt = (
-        'bestvideo[height<=%s][vcodec^=avc1]+bestaudio[acodec^=mp4a]/'
-        'bestvideo[height<=%s][vcodec^=avc1]+bestaudio/'
-        'bestvideo[height<=%s]+bestaudio/'
-        'best[height<=%s]/best'
-    ) % (max_quality, max_quality, max_quality, max_quality)
+    ffmpeg_available, ffmpeg_version = detect_ffmpeg()
+    debug('ffmpeg_available=%s version=%s' % (ffmpeg_available, ffmpeg_version))
 
-    cmd = [
-        'yt-dlp',
-        '-f', fmt,
-        '--merge-output-format', 'mp4',
-        '--newline',
-        '--no-colors',
-        '--no-playlist',
-        '--no-update',
-        '-o', output_template,
-        video_url,
-    ]
-
-    send_message({'type': 'status', 'message': 'Starting yt-dlp...'})
+    if ffmpeg_available:
+        # Prefer separate streams (higher quality) and let yt-dlp+ffmpeg merge.
+        fmt = (
+            'bestvideo[height<=%s][vcodec^=avc1]+bestaudio[acodec^=mp4a]/'
+            'bestvideo[height<=%s][vcodec^=avc1]+bestaudio/'
+            'bestvideo[height<=%s]+bestaudio/'
+            'best[height<=%s]/best'
+        ) % (max_quality, max_quality, max_quality, max_quality)
+        cmd = [
+            'yt-dlp', '-f', fmt,
+            '--merge-output-format', 'mp4',
+            '--newline', '--no-colors', '--no-playlist', '--no-update',
+            '-o', output_template,
+            video_url,
+        ]
+        send_message({'type': 'status', 'message': 'Starting yt-dlp...'})
+    else:
+        # No ffmpeg → use only pre-muxed (single-file) formats. These cap at
+        # 720p on YouTube, but the user gets one playable file with audio
+        # instead of two unmerged streams.
+        fmt = 'best[height<=%s][ext=mp4]/best[ext=mp4]/best' % max_quality
+        cmd = [
+            'yt-dlp', '-f', fmt,
+            '--newline', '--no-colors', '--no-playlist', '--no-update',
+            '-o', output_template,
+            video_url,
+        ]
+        send_message({
+            'type': 'status',
+            'message': 'ffmpeg not installed — downloading single-file format (max 720p). Install ffmpeg for higher quality.',
+        })
 
     try:
         ytdlp_process = subprocess.Popen(
@@ -212,10 +246,42 @@ def download_video(video_url, output_dir, title, max_quality='1080'):
             for f in sorted(os.listdir(output_dir)):
                 if os.path.isfile(os.path.join(output_dir, f)):
                     files.append(f)
+
+            # Merge verification: if any file in the output dir has a
+            # `.fNNN.` segment in its name (e.g. `.f137.mp4`, `.f140.m4a`),
+            # that's yt-dlp's signature for an unmerged per-format download.
+            # The merge step failed silently — almost always because ffmpeg
+            # is missing. Surface a clear, actionable error rather than
+            # claiming "complete" with a soundless video.
+            unmerged = [f for f in files if re.search(r'\.f\d+\.', f)]
+            if unmerged:
+                debug('merge failed; unmerged files: %s' % unmerged)
+                # Distinguish by what ffmpeg said earlier — guides the message.
+                if not ffmpeg_available:
+                    err = (
+                        'Video and audio downloaded as separate files because '
+                        'ffmpeg is not installed. Install it with: '
+                        'brew install ffmpeg — then re-download. '
+                        'Files: ' + ', '.join(unmerged)
+                    )
+                else:
+                    err = (
+                        'yt-dlp finished but the streams were not merged into '
+                        'a single file. Unmerged files: ' + ', '.join(unmerged)
+                    )
+                send_message({
+                    'type': 'error',
+                    'message': err,
+                    'unmergedFiles': unmerged,
+                    'outputDir': output_dir,
+                })
+                return
+
             send_message({
                 'type': 'complete',
                 'files': files,
                 'outputDir': output_dir,
+                'ffmpegAvailable': ffmpeg_available,
             })
         else:
             err_msg = last_error if last_error else 'yt-dlp exited with code %d' % ytdlp_process.returncode
@@ -262,18 +328,25 @@ def main():
             msg.get('maxQuality', '1080'),
         )
     elif action == 'check':
+        ytdlp_available = False
+        ytdlp_version = ''
         try:
             result = subprocess.run(
                 ['yt-dlp', '--version'],
                 capture_output=True, text=True, timeout=10,
             )
-            send_message({
-                'type': 'check_result',
-                'available': result.returncode == 0,
-                'version': result.stdout.strip(),
-            })
+            ytdlp_available = result.returncode == 0
+            ytdlp_version = (result.stdout or '').strip()
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            send_message({'type': 'check_result', 'available': False})
+            pass
+        ffmpeg_available, ffmpeg_version = detect_ffmpeg()
+        send_message({
+            'type': 'check_result',
+            'available': ytdlp_available,
+            'version': ytdlp_version,
+            'ffmpegAvailable': ffmpeg_available,
+            'ffmpegVersion': ffmpeg_version or '',
+        })
     else:
         send_message({'type': 'error', 'message': 'Unknown action: %s' % action})
 
