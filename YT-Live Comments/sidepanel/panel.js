@@ -272,13 +272,28 @@ async function runSetupCheck({ force = false, autoExpandOnProblem = false } = {}
 
   if (result.status === 'ok') {
     const v = result.version ? ` (yt-dlp ${result.version})` : '';
+    if (result.ffmpegAvailable) {
+      applySetupStatus({
+        klass: 'setup-ok',
+        label: `Video downloads ready${v}`,
+        summary: 'yt-dlp + ffmpeg installed. Highest-quality merged downloads will work.',
+        showSteps: false,
+      });
+      // Everything green — stay collapsed.
+      return result;
+    }
+    // yt-dlp present but ffmpeg missing — videos will still download, but
+    // capped at 720p (single-file format) because we can't merge separate
+    // streams without ffmpeg. Treat as a soft warning, not a blocker.
     applySetupStatus({
-      klass: 'setup-ok',
-      label: `Video downloads ready${v}`,
-      summary: 'yt-dlp is installed and the native messaging host is reachable. Video downloads will work.',
+      klass: 'setup-warn',
+      label: `Video downloads limited — install ffmpeg for HD${v}`,
+      summary:
+        "ffmpeg isn't installed. Videos will still download but as a single-file format (max 720p). " +
+        'Install ffmpeg with: brew install ffmpeg — then click Re-check.',
       showSteps: false,
     });
-    // Stay collapsed when everything works.
+    if (autoExpandOnProblem) setSetupExpanded(true);
     return result;
   }
 

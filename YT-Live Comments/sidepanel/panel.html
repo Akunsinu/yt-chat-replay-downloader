@@ -9,7 +9,7 @@
 <body>
   <div class="panel">
     <header class="panel-header">
-      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.1.2</span></h1>
+      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.1.3</span></h1>
     </header>
 
     <!-- Setup status (always visible, regardless of page) -->
@@ -219,30 +219,32 @@
           </div>
         </section>
 
-        <!-- STEP 2: Install yt-dlp -->
+        <!-- STEP 2: Install yt-dlp + ffmpeg -->
         <section class="walkthrough-step" data-step="1">
           <div class="walkthrough-step-num">Step 2 of 5</div>
-          <h3>Install yt-dlp</h3>
+          <h3>Install yt-dlp and ffmpeg</h3>
 
           <ol class="walkthrough-mini-steps">
             <li>In <strong>Finder</strong>, locate the <code>YT-Live Comments</code> folder.</li>
             <li>Right-click it → <strong>New Terminal at Folder</strong>.</li>
-            <li>Run the command below in that Terminal window.</li>
+            <li>Run the command below. <strong>ffmpeg</strong> is required to merge YouTube's separate video and audio streams — without it, downloads end up silent or capped at 720p.</li>
           </ol>
 
-          <div class="mock-terminal" data-copy="brew install yt-dlp">
+          <div class="mock-terminal" data-copy="brew install yt-dlp ffmpeg">
             <div class="mock-terminal-bar">
               <span class="mock-tl-btn red"></span>
               <span class="mock-tl-btn yellow"></span>
               <span class="mock-tl-btn green"></span>
               <span class="mock-tl-title">Terminal — YT-Live Comments</span>
-              <button class="mock-copy-btn" type="button" data-copy-target="brew install yt-dlp">Copy</button>
+              <button class="mock-copy-btn" type="button" data-copy-target="brew install yt-dlp ffmpeg">Copy</button>
             </div>
             <div class="mock-terminal-body">
-              <div class="mock-line"><span class="mock-prompt">$</span> brew install yt-dlp</div>
-              <div class="mock-line mock-output">==&gt; Downloading yt-dlp...</div>
+              <div class="mock-line"><span class="mock-prompt">$</span> brew install yt-dlp ffmpeg</div>
+              <div class="mock-line mock-output">==&gt; Downloading yt-dlp, ffmpeg, and dependencies...</div>
               <div class="mock-line mock-output">==&gt; Pouring yt-dlp...</div>
+              <div class="mock-line mock-output">==&gt; Pouring ffmpeg...</div>
               <div class="mock-line mock-output mock-success">🍺  /opt/homebrew/Cellar/yt-dlp/2026.03.17: 23 files</div>
+              <div class="mock-line mock-output mock-success">🍺  /opt/homebrew/Cellar/ffmpeg/...</div>
               <div class="mock-line"><span class="mock-prompt">$</span> <span class="mock-cursor">▍</span></div>
             </div>
           </div>
