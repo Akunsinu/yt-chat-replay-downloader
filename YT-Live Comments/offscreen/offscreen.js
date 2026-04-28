@@ -7,6 +7,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (message.type === 'CREATE_BLOB_URL') {
+    // Mint a blob URL for a large export payload. The SW can't call
+    // URL.createObjectURL itself; it has to round-trip through here.
+    try {
+      const { content, mimeType } = message.data || {};
+      const blob = new Blob([content], { type: mimeType || 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      sendResponse({ url });
+    } catch (e) {
+      sendResponse({ error: e.message });
+    }
+    return true;
+  }
+
+  if (message.type === 'REVOKE_BLOB_URL') {
+    try {
+      URL.revokeObjectURL(message.data?.url);
+    } catch (_) {}
+    sendResponse({ ok: true });
+    return true;
+  }
 });
 
 async function renderAndZip({ comments, chat, theme, folderPrefix, dateStr }) {

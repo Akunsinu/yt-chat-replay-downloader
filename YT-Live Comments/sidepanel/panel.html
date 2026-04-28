@@ -9,7 +9,7 @@
 <body>
   <div class="panel">
     <header class="panel-header">
-      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.1.1</span></h1>
+      <h1>YouTube Video Archiver <span style="font-size:12px;font-weight:400;opacity:0.6">v2.1.2</span></h1>
     </header>
 
     <!-- Setup status (always visible, regardless of page) -->
@@ -151,6 +151,13 @@
           </div>
         </div>
         <button id="btn-download-selected" class="btn btn-primary">Download Selected</button>
+        <div id="export-progress" class="screenshot-progress hidden">
+          <div class="screenshot-progress-label" id="export-progress-label">Preparing exports…</div>
+          <div class="screenshot-progress-bar">
+            <div class="screenshot-progress-fill" id="export-progress-fill"></div>
+          </div>
+          <div class="screenshot-progress-count" id="export-progress-count">0 / 0</div>
+        </div>
         <div id="screenshot-progress" class="screenshot-progress hidden">
           <div class="screenshot-progress-label" id="screenshot-progress-label">Rendering screenshots...</div>
           <div class="screenshot-progress-bar">
