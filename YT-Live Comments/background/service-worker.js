@@ -1003,10 +1003,24 @@ function archiveFilename(suffix) {
   return `YT-Archive/${prefix}/${prefix}_${suffix}`;
 }
 
+// Chrome refuses data-URL downloads above ~2MB on recent versions (silent
+// FILE_FAILED). For larger exports we round-trip through the offscreen
+// document, which has DOM access and can mint blob URLs. Anything below the
+// threshold takes the cheap data-URL path to avoid offscreen overhead on the
+// common case.
+const DATA_URL_DOWNLOAD_THRESHOLD = 1.5 * 1024 * 1024; // 1.5MB, comfortably under Chrome's limit
+
 async function downloadBlob(content, mimeType, filename) {
-  console.log('[YT Archiver SW] downloadBlob:', filename, 'size:', content.length);
-  // MV3 service workers don't support URL.createObjectURL — use data URL instead
-  // Encode in chunks, yielding to the event loop to prevent UI freezes with large exports
+  const sizeBytes = content.length;
+  console.log('[YT Archiver SW] downloadBlob:', filename, 'size:', sizeBytes);
+
+  if (sizeBytes > DATA_URL_DOWNLOAD_THRESHOLD) {
+    console.log('[YT Archiver SW] downloadBlob: large file, routing via offscreen blob URL');
+    return downloadViaOffscreen(content, mimeType, filename);
+  }
+
+  // Small file path: encode to base64 in chunks (yielding so the SW message
+  // pump stays responsive) and download via data URL.
   const encoder = new TextEncoder();
   const bytes = encoder.encode(content);
   let binary = '';
@@ -1020,13 +1034,76 @@ async function downloadBlob(content, mimeType, filename) {
   }
   const base64 = btoa(binary);
   const dataUrl = `data:${mimeType};base64,${base64}`;
-  chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, (downloadId) => {
-    if (chrome.runtime.lastError) {
-      console.error('[YT Archiver SW] Download failed:', chrome.runtime.lastError.message);
-    } else {
-      console.log('[YT Archiver SW] Download started:', downloadId, filename);
-    }
+
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, (downloadId) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        console.error('[YT Archiver SW] Download failed:', filename, '-', err.message);
+        broadcastToSidePanel({
+          type: 'EXPORT_ERROR',
+          data: { filename, error: err.message },
+        });
+        reject(new Error(err.message));
+      } else {
+        console.log('[YT Archiver SW] Download started:', downloadId, filename);
+        resolve(downloadId);
+      }
+    });
   });
+}
+
+// Large-file path: push content into the offscreen document, have it mint a
+// blob URL, hand that to chrome.downloads, then revoke after the download
+// starts.
+async function downloadViaOffscreen(content, mimeType, filename) {
+  let offscreenOpen = false;
+  try {
+    try {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen/offscreen.html',
+        reasons: ['BLOBS'],
+        justification: 'Mint blob URLs for large download payloads (data URLs cap at ~2MB)',
+      });
+      offscreenOpen = true;
+    } catch (e) {
+      if (e.message?.includes('already exists')) offscreenOpen = true;
+      else throw e;
+    }
+
+    const result = await chrome.runtime.sendMessage({
+      type: 'CREATE_BLOB_URL',
+      data: { content, mimeType },
+    });
+
+    if (!result?.url) {
+      throw new Error(result?.error || 'Offscreen returned no blob URL');
+    }
+
+    const blobUrl = result.url;
+    return await new Promise((resolve, reject) => {
+      chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, (downloadId) => {
+        const err = chrome.runtime.lastError;
+        // Revoke the blob URL after Chrome has accepted the download (it
+        // copies the bytes into its own buffer at this point).
+        chrome.runtime.sendMessage({ type: 'REVOKE_BLOB_URL', data: { url: blobUrl } }).catch(() => {});
+        if (err) {
+          console.error('[YT Archiver SW] Blob download failed:', filename, '-', err.message);
+          broadcastToSidePanel({
+            type: 'EXPORT_ERROR',
+            data: { filename, error: err.message },
+          });
+          reject(new Error(err.message));
+        } else {
+          console.log('[YT Archiver SW] Blob download started:', downloadId, filename);
+          resolve(downloadId);
+        }
+      });
+    });
+  } finally {
+    // Don't close offscreen here; the screenshot path may still need it. The
+    // doc is reusable and Chrome charges per-create, not per-message.
+  }
 }
 
 function escapeCSVField(val) {
@@ -1260,80 +1337,114 @@ async function exportAll(theme = 'dark', selected = {}) {
     '| comments:', regularComments.length,
     '| chat:', chatMessages.length);
 
-  let exportCount = 0;
-  const skipped = [];
+  // Build the list of operations in display order. Each op carries a guard
+  // ("can") so we filter unavailable ones out of the count without losing the
+  // skip reason.
+  const ops = [
+    {
+      key: 'metadataCSV', name: 'Metadata CSV',
+      can: () => videoMetadata && Object.keys(videoMetadata).length > 0,
+      skipReason: 'no metadata available',
+      run: () => exportMetadataCSV(),
+    },
+    {
+      key: 'commentsCSV', name: 'Comments CSV',
+      can: () => regularComments.length > 0,
+      skipReason: 'no comments fetched',
+      run: () => exportCommentsCSV(),
+    },
+    {
+      key: 'commentsHTML', name: 'Comments HTML',
+      can: () => regularComments.length > 0,
+      skipReason: 'no comments fetched',
+      run: () => exportCommentsHTML(theme),
+    },
+    {
+      key: 'liveChatCSV', name: 'Live Chat CSV',
+      can: () => chatMessages.length > 0,
+      skipReason: 'no chat messages',
+      run: () => exportChatCSV([]),
+    },
+    {
+      key: 'liveChatHTML', name: 'Live Chat HTML',
+      can: () => chatMessages.length > 0,
+      skipReason: 'no chat messages',
+      run: () => exportChatHTML(theme, []),
+    },
+    {
+      key: 'youtubeClone', name: 'YouTube Clone HTML',
+      can: () => true,
+      run: () => exportYouTubeClone(theme),
+    },
+    {
+      key: 'commentScreenshots', name: 'Comment Screenshots ZIP',
+      can: () => regularComments.length > 0 || chatMessages.length > 0,
+      skipReason: 'no comments or chat messages',
+      run: () => exportCommentScreenshots(theme),
+    },
+  ];
 
-  try {
-    if (selected.metadataCSV) {
-      if (videoMetadata && Object.keys(videoMetadata).length > 0) {
-        await exportMetadataCSV();
-        exportCount++;
-      } else {
-        skipped.push('Metadata CSV (no metadata available)');
-      }
-    }
-    if (selected.commentsCSV) {
-      if (regularComments.length > 0) {
-        await exportCommentsCSV();
-        exportCount++;
-      } else {
-        skipped.push('Comments CSV (no comments fetched)');
-      }
-    }
-    if (selected.commentsHTML) {
-      if (regularComments.length > 0) {
-        await exportCommentsHTML(theme);
-        exportCount++;
-      } else {
-        skipped.push('Comments HTML (no comments fetched)');
-      }
-    }
-    if (selected.liveChatCSV) {
-      if (chatMessages.length > 0) {
-        await exportChatCSV([]);
-        exportCount++;
-      } else {
-        skipped.push('Live Chat CSV (no chat messages)');
-      }
-    }
-    if (selected.liveChatHTML) {
-      if (chatMessages.length > 0) {
-        await exportChatHTML(theme, []);
-        exportCount++;
-      } else {
-        skipped.push('Live Chat HTML (no chat messages)');
-      }
-    }
-    if (selected.youtubeClone) {
-      await exportYouTubeClone(theme);
-      exportCount++;
-    }
-    if (selected.commentScreenshots) {
-      if (regularComments.length > 0 || chatMessages.length > 0) {
-        await exportCommentScreenshots(theme);
-        exportCount++;
-      } else {
-        skipped.push('Screenshots (no comments or chat messages)');
-      }
-    }
-  } catch (e) {
-    console.error('[YT Archiver] exportAll error:', e);
-    broadcastToSidePanel({ type: 'FETCH_ERROR', data: { error: 'Export error: ' + e.message } });
+  const queue = ops.filter(op => selected[op.key] && op.can());
+  const skipped = ops
+    .filter(op => selected[op.key] && !op.can())
+    .map(op => `${op.name} (${op.skipReason})`);
+
+  const total = queue.length;
+  console.log('[YT Archiver] exportAll: queued', total, 'ops, skipped', skipped.length);
+
+  if (total === 0) {
+    broadcastToSidePanel({
+      type: 'EXPORT_ERROR',
+      data: { error: skipped.length ? 'Nothing to export. ' + skipped.join('; ') : 'No exports selected.' },
+    });
     return;
   }
 
-  if (exportCount === 0 && skipped.length > 0) {
+  // Initial progress so the panel shows the bar immediately.
+  broadcastToSidePanel({
+    type: 'EXPORT_PROGRESS',
+    data: { current: 0, total, name: queue[0].name },
+  });
+
+  let completed = 0;
+  for (const op of queue) {
+    completed++;
     broadcastToSidePanel({
-      type: 'FETCH_ERROR',
-      data: { error: 'Nothing to export. ' + skipped.join('; ') },
+      type: 'EXPORT_PROGRESS',
+      data: { current: completed, total, name: op.name, status: 'running' },
     });
+    console.log(`[YT Archiver] exportAll: ${completed}/${total} — ${op.name} START`);
+    try {
+      await op.run();
+      console.log(`[YT Archiver] exportAll: ${completed}/${total} — ${op.name} DONE`);
+    } catch (e) {
+      console.error(`[YT Archiver] exportAll: ${completed}/${total} — ${op.name} FAILED:`, e);
+      broadcastToSidePanel({
+        type: 'EXPORT_ERROR',
+        data: { error: `${op.name} failed: ${e.message || 'unknown error'}` },
+      });
+      // Continue with remaining exports rather than abandoning the whole batch
+    }
   }
-  console.log('[YT Archiver] exportAll done: exported', exportCount, 'skipped:', skipped);
+
+  broadcastToSidePanel({
+    type: 'EXPORT_COMPLETE',
+    data: { count: completed, total, skipped },
+  });
+  console.log('[YT Archiver] exportAll done: completed', completed, '/', total, 'skipped:', skipped);
 }
 
 function sanitizeFilename(name) {
-  // Strip path/shell-unsafe chars and collapse whitespace
-  let out = String(name).replace(/[<>:"/\\|?*'`!\x00-\x1f]/g, '_').replace(/\s+/g, '_');
+  // Strip Unicode control AND format characters first. \p{Cf} catches
+  // bidi-formatting marks (U+202A..U+202E, U+2066..U+2069), zero-width
+  // joiners (U+200B..U+200D), word joiner (U+2060), BOM (U+FEFF), language
+  // tags, etc. Chrome's downloads.download rejects filenames containing
+  // any of these with the cryptic "Invalid filename" error — YouTube wraps
+  // channel handles in U+202A/U+202C for RTL safety, so this is a real
+  // hazard, not a theoretical one.
+  let out = String(name).replace(/[\p{Cc}\p{Cf}]/gu, '');
+  // Strip path/shell-unsafe ASCII chars and collapse whitespace.
+  out = out.replace(/[<>:"/\\|?*'`!]/g, '_').replace(/\s+/g, '_');
   // Trim trailing dots/spaces — Windows silently drops them and ends up with the
   // wrong name; doing it ourselves keeps cross-platform behavior consistent.
   out = out.replace(/[. _]+$/g, '');

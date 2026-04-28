@@ -643,6 +643,28 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'MEMORY_WARNING':
       if (message.data?.message) showError(message.data.message);
       break;
+
+    case 'EXPORT_PROGRESS': {
+      const d = message.data || {};
+      showExportProgress(d.current || 0, d.total || 0, d.name || '');
+      break;
+    }
+
+    case 'EXPORT_COMPLETE': {
+      hideExportProgress();
+      const d = message.data || {};
+      if (d.skipped && d.skipped.length > 0) {
+        showError(`Done. Skipped: ${d.skipped.join('; ')}`);
+      } else {
+        hideError();
+      }
+      break;
+    }
+
+    case 'EXPORT_ERROR':
+      hideExportProgress();
+      showError(message.data?.error || 'Export failed');
+      break;
   }
 });
 
@@ -673,6 +695,35 @@ function showScreenshotProgress(current, total) {
   fill.style.width = pct + '%';
   count.textContent = `${current.toLocaleString()} / ${total.toLocaleString()}`;
   label.textContent = current >= total ? 'Zipping screenshots...' : 'Rendering screenshots...';
+}
+
+function showExportProgress(current, total, name) {
+  const container = document.getElementById('export-progress');
+  const fill = document.getElementById('export-progress-fill');
+  const count = document.getElementById('export-progress-count');
+  const label = document.getElementById('export-progress-label');
+  const btn = document.getElementById('btn-download-selected');
+
+  container.classList.remove('hidden');
+  btn.disabled = true;
+  btn.textContent = 'Exporting...';
+
+  // Show progress as "completed-1 of total" while item N is in flight, so the
+  // bar reads honestly: an export that's currently running is counted toward
+  // "in progress," not "done."
+  const inFlight = Math.max(0, current - 1);
+  const pct = total > 0 ? (inFlight / total * 100) : 0;
+  fill.style.width = pct + '%';
+  count.textContent = `${current} / ${total}`;
+  label.textContent = name ? `Generating: ${name}` : 'Preparing exports…';
+}
+
+function hideExportProgress() {
+  const container = document.getElementById('export-progress');
+  const btn = document.getElementById('btn-download-selected');
+  container.classList.add('hidden');
+  btn.disabled = false;
+  btn.textContent = 'Download Selected';
 }
 
 function hideScreenshotProgress() {
