@@ -23,8 +23,12 @@
   let cachedStreamingData = null;
 
   function getVideoId() {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('v');
+    // Regular watch pages: /watch?v=<id>
+    const v = new URLSearchParams(window.location.search).get('v');
+    if (v) return v;
+    // Shorts: /shorts/<id> — the id lives in the path, there is no ?v=
+    const m = window.location.pathname.match(/^\/shorts\/([^/?#]+)/);
+    return m ? m[1] : null;
   }
 
   // ─── ytInitialData Extraction ───
@@ -1073,6 +1077,11 @@
       // Extract metadata
       const metadata = extractFullMetadata(ytInitialData, playerResponse);
 
+      // Guard against stale SPA data: if the injected player metadata is for a
+      // different video than the URL (e.g. a Shorts swipe raced the player update),
+      // don't attach it to this video.
+      const safeMetadata = (metadata.videoId && metadata.videoId !== videoId) ? {} : metadata;
+
       // Check if we got formats with direct URLs
       let hasDirectUrls = !!(streamingData && (streamingData.formats.length > 0 || streamingData.adaptiveFormats.length > 0));
 
@@ -1093,11 +1102,11 @@
                 type: 'VIDEO_PAGE_DETECTED',
                 data: {
                   videoId,
-                  title: videoInfo.title || metadata.title || '',
-                  channelName: videoInfo.channelName || metadata.author || '',
+                  title: videoInfo.title || safeMetadata.title || '',
+                  channelName: videoInfo.channelName || safeMetadata.author || '',
                   chatContinuationToken,
                   commentsContinuationToken,
-                  metadata,
+                  metadata: safeMetadata,
                   hasStreams: true,
                   streamingSummary: summary,
                 },
@@ -1117,11 +1126,11 @@
           type: 'VIDEO_PAGE_DETECTED',
           data: {
             videoId,
-            title: videoInfo.title || metadata.title || '',
-            channelName: videoInfo.channelName || metadata.author || '',
+            title: videoInfo.title || safeMetadata.title || '',
+            channelName: videoInfo.channelName || safeMetadata.author || '',
             chatContinuationToken,
             commentsContinuationToken,
-            metadata,
+            metadata: safeMetadata,
             hasStreams: hasDirectUrls,
             streamingSummary,
           },
@@ -1589,4 +1598,21 @@
     subtree: true,
     characterData: true,
   });
+
+  // Strategy 4: URL polling. Shorts "swipe" navigation frequently does NOT emit
+  // yt-navigate-finish and may not mutate <title> (two Shorts can share a title),
+  // so a lightweight 1s URL poll is the only reliable signal for shorts-to-shorts.
+  function reDetectIfVideoChanged() {
+    const currentVideoId = getVideoId();
+    if (currentVideoId && currentVideoId !== lastVideoId) {
+      cachedStreamingData = null;
+      setTimeout(() => {
+        extractViaInjection();
+        setTimeout(() => {
+          if (lastVideoId !== currentVideoId) checkForChatReplay();
+        }, 1500);
+      }, 500);
+    }
+  }
+  setInterval(reDetectIfVideoChanged, 1000);
 })();
