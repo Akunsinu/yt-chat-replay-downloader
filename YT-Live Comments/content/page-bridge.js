@@ -38,7 +38,24 @@
     if (!firstAvailable) firstAvailable = candidates[j];
     if (wantId && candidates[j].videoDetails.videoId === wantId) { chosen = candidates[j]; break; }
   }
-  payload.playerResponse = chosen || firstAvailable || null;
+  if (chosen) {
+    payload.playerResponse = chosen;
+  } else if (wantId) {
+    // We know which video we want but no candidate is for it yet (mid-swipe / ad /
+    // player not ready). Forwarding firstAvailable would hand content.js the WRONG
+    // video's streams + metadata under this URL's id, so send null: content.js will
+    // defer and retry rather than archive the previous video's data.
+    payload.playerResponse = null;
+  } else {
+    // No URL id to match against — preserve the original lenient behavior, including
+    // a raw player response that may lack videoDetails (early/live/premiere states
+    // that still expose streamingData).
+    payload.playerResponse = firstAvailable || (window.ytInitialPlayerResponse ? {
+      videoDetails: window.ytInitialPlayerResponse.videoDetails,
+      microformat: window.ytInitialPlayerResponse.microformat,
+      streamingData: window.ytInitialPlayerResponse.streamingData,
+    } : null);
+  }
   if (payload.ytInitialData || payload.innertubeConfig || payload.playerResponse) {
     window.postMessage({
       type: '__YT_CHAT_DL_INITIAL_DATA__',

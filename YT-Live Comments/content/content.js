@@ -1055,6 +1055,16 @@
     document.documentElement.appendChild(script);
   }
 
+  // ytInitialData carries the id of the video it was built for. If that id is
+  // present AND differs from the URL's video, the blob is stale — the classic
+  // /watch -> Short SPA race, where its continuation tokens, title, channel and
+  // like/subscriber counts all belong to the PREVIOUS video. When the id is
+  // absent (some layouts, Shorts) we can't prove staleness, so we trust it,
+  // preserving the existing /watch behavior.
+  function ytInitialDataVideoId(yt) {
+    return yt?.currentVideoEndpoint?.watchEndpoint?.videoId || '';
+  }
+
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.data?.type !== '__YT_CHAT_DL_INITIAL_DATA__') return;
 
@@ -1063,79 +1073,97 @@
       const ytInitialData = payload.ytInitialData;
       cachedInnertubeConfig = payload.innertubeConfig || cachedInnertubeConfig;
 
-      const playerResponse = payload.playerResponse || null;
-      const chatContinuationToken = extractContinuationToken(ytInitialData);
-      const commentsContinuationToken = extractCommentsContinuationToken(ytInitialData);
-      console.log('[YT Archiver] Comments token:', commentsContinuationToken ? commentsContinuationToken.substring(0, 30) + '... (len=' + commentsContinuationToken.length + ')' : 'null');
-      const videoInfo = extractVideoInfo(ytInitialData);
       const videoId = getVideoId();
+      if (!videoId) return;
 
-      // Extract and cache streaming data
+      const playerResponse = payload.playerResponse || null;
+      const prVideoId = playerResponse?.videoDetails?.videoId || '';
+      const playerMatches = !!playerResponse && prVideoId === videoId;
+
+      // Only trust ytInitialData-derived fields when the blob is not provably stale.
+      const ytStale = !!ytInitialDataVideoId(ytInitialData) && ytInitialDataVideoId(ytInitialData) !== videoId;
+
+      // Emit only when the page has actually caught up to this video. Two acceptable
+      // shapes: (a) a player response whose id matches the URL (best — brings fresh
+      // streams + metadata), or (b) no player response, but ytInitialData is not
+      // provably stale (legacy /watch path for videos whose player response is
+      // unavailable). A MISMATCHED player response, or stale ytInitialData, means the
+      // page hasn't caught up: return WITHOUT touching lastVideoId so a re-detect
+      // retries. Committing here is exactly what previously froze a Short on the
+      // previous video's (or blank) data.
+      const canEmit = playerMatches || (!playerResponse && !ytStale && !!ytInitialData);
+      if (!canEmit) {
+        console.log('[YT Archiver] Injection: page not yet on', videoId,
+          '(playerId:', prVideoId || 'none', ', ytStale:', ytStale, ') — deferring to retry');
+        return;
+      }
+
+      const freshYt = ytStale ? null : ytInitialData;
+      const chatContinuationToken = extractContinuationToken(freshYt);
+      const commentsContinuationToken = extractCommentsContinuationToken(freshYt);
+      console.log('[YT Archiver] Comments token:', commentsContinuationToken ? commentsContinuationToken.substring(0, 30) + '... (len=' + commentsContinuationToken.length + ')' : 'null', ytStale ? '(ytInitialData stale — dropped)' : '');
+      const videoInfo = extractVideoInfo(freshYt);
+
+      // playerResponse (when present) matches the URL, so its streams + videoDetails/
+      // microformat are for the correct video; ytInitialData-only fields (likes,
+      // subscribers, view text) are folded in only when the blob is fresh.
       let streamingData = extractStreamingData(playerResponse);
       if (streamingData) cachedStreamingData = streamingData;
 
-      // Extract metadata
-      const metadata = extractFullMetadata(ytInitialData, playerResponse);
+      const metadata = extractFullMetadata(freshYt, playerResponse);
 
-      // Guard against stale SPA data: if the injected player metadata is for a
-      // different video than the URL (e.g. a Shorts swipe raced the player update),
-      // don't attach it to this video.
-      const safeMetadata = (metadata.videoId && metadata.videoId !== videoId) ? {} : metadata;
-
-      // Check if we got formats with direct URLs
       let hasDirectUrls = !!(streamingData && (streamingData.formats.length > 0 || streamingData.adaptiveFormats.length > 0));
-
-      // Get streaming summary
       let streamingSummary = getStreamingSummary(streamingData);
 
-      if (videoId) {
-        lastVideoId = videoId;
+      // Fresh, matching detection — commit it.
+      lastVideoId = videoId;
 
-        // If no direct URLs, try player API in background
-        if (!hasDirectUrls && videoId) {
-          fetchPlayerStreams(videoId).then((result) => {
-            if (result) {
-              cachedStreamingData = result;
-              const summary = getStreamingSummary(result);
-              console.log('[YT Archiver] Player API fallback: got streams, updating panel');
-              chrome.runtime.sendMessage({
-                type: 'VIDEO_PAGE_DETECTED',
-                data: {
-                  videoId,
-                  title: videoInfo.title || safeMetadata.title || '',
-                  channelName: videoInfo.channelName || safeMetadata.author || '',
-                  chatContinuationToken,
-                  commentsContinuationToken,
-                  metadata: safeMetadata,
-                  hasStreams: true,
-                  streamingSummary: summary,
-                },
-              }).catch(() => {});
-            }
-          }).catch(() => {});
-        }
-
-        console.log('[YT Archiver] Injection path: sending VIDEO_PAGE_DETECTED', {
-          videoId,
-          hasMeta: Object.keys(metadata).length > 0,
-          hasStreams: hasDirectUrls,
-          hasComments: !!commentsContinuationToken,
-          hasChat: !!chatContinuationToken,
-        });
-        chrome.runtime.sendMessage({
-          type: 'VIDEO_PAGE_DETECTED',
-          data: {
-            videoId,
-            title: videoInfo.title || safeMetadata.title || '',
-            channelName: videoInfo.channelName || safeMetadata.author || '',
-            chatContinuationToken,
-            commentsContinuationToken,
-            metadata: safeMetadata,
-            hasStreams: hasDirectUrls,
-            streamingSummary,
-          },
+      // If no direct URLs, try player API in background
+      if (!hasDirectUrls) {
+        fetchPlayerStreams(videoId).then((result) => {
+          // Guard against the user having swiped away while the request was in flight.
+          if (result && getVideoId() === videoId) {
+            cachedStreamingData = result;
+            const summary = getStreamingSummary(result);
+            console.log('[YT Archiver] Player API fallback: got streams, updating panel');
+            chrome.runtime.sendMessage({
+              type: 'VIDEO_PAGE_DETECTED',
+              data: {
+                videoId,
+                title: videoInfo.title || metadata.title || '',
+                channelName: videoInfo.channelName || metadata.author || '',
+                chatContinuationToken,
+                commentsContinuationToken,
+                metadata,
+                hasStreams: true,
+                streamingSummary: summary,
+              },
+            }).catch(() => {});
+          }
         }).catch(() => {});
       }
+
+      console.log('[YT Archiver] Injection path: sending VIDEO_PAGE_DETECTED', {
+        videoId,
+        hasMeta: Object.keys(metadata).length > 0,
+        hasStreams: hasDirectUrls,
+        hasComments: !!commentsContinuationToken,
+        hasChat: !!chatContinuationToken,
+        ytStale,
+      });
+      chrome.runtime.sendMessage({
+        type: 'VIDEO_PAGE_DETECTED',
+        data: {
+          videoId,
+          title: videoInfo.title || metadata.title || '',
+          channelName: videoInfo.channelName || metadata.author || '',
+          chatContinuationToken,
+          commentsContinuationToken,
+          metadata,
+          hasStreams: hasDirectUrls,
+          streamingSummary,
+        },
+      }).catch(() => {});
     } catch (e) {
       console.error('[YT Archiver] Error parsing injected data:', e);
     }
@@ -1145,12 +1173,20 @@
     const videoId = getVideoId();
     if (!videoId) return;
     if (!force && videoId === lastVideoId) return;
-    lastVideoId = videoId;
 
+    // DOM-scraped ytInitialData is the FIRST page's blob after an SPA nav, so apply
+    // the same staleness guard as the injection path: never attach the previous
+    // video's tokens/title to this one. This is a best-effort URL-id fallback that
+    // also commits lastVideoId so re-detection stops looping when injection never
+    // responds (e.g. page-bridge blocked); the download stays correct regardless.
     const ytInitialData = extractYtInitialData();
-    const chatContinuationToken = extractContinuationToken(ytInitialData);
-    const commentsContinuationToken = extractCommentsContinuationToken(ytInitialData);
-    const videoInfo = extractVideoInfo(ytInitialData);
+    const ytStale = !!ytInitialDataVideoId(ytInitialData) && ytInitialDataVideoId(ytInitialData) !== videoId;
+    const freshYt = ytStale ? null : ytInitialData;
+    const chatContinuationToken = extractContinuationToken(freshYt);
+    const commentsContinuationToken = extractCommentsContinuationToken(freshYt);
+    const videoInfo = extractVideoInfo(freshYt);
+
+    lastVideoId = videoId;
 
     // Send the unified VIDEO_PAGE_DETECTED message
     chrome.runtime.sendMessage({
@@ -1532,64 +1568,45 @@
 
   // Watch for YouTube SPA navigation using multiple strategies
 
-  // Strategy 1: yt-navigate-finish event (the canonical YouTube SPA navigation event)
-  window.addEventListener('yt-navigate-finish', () => {
+  // Watch for YouTube SPA navigation via several triggers that all funnel into one
+  // re-detect path. reDetectPendingFor debounces them: yt-navigate-finish, popstate,
+  // the title observer and the 1s poll can all fire for the same navigation, so we
+  // run at most one inject+fallback cycle per target video at a time. If that cycle
+  // doesn't produce a matching detection (lastVideoId still != target — e.g. the
+  // player response hasn't caught up yet), the next trigger retries.
+  let reDetectPendingFor = null;
+  function scheduleReDetect(source) {
     const currentVideoId = getVideoId();
-    console.log('[YT Archiver] yt-navigate-finish fired, videoId:', currentVideoId, 'lastVideoId:', lastVideoId);
-    if (currentVideoId && currentVideoId !== lastVideoId) {
-      cachedStreamingData = null;
-      // Short delay to let YouTube populate ytInitialData
+    if (!currentVideoId || currentVideoId === lastVideoId) return;
+    if (reDetectPendingFor === currentVideoId) return; // a cycle for this id is already in flight
+    reDetectPendingFor = currentVideoId;
+    console.log('[YT Archiver] re-detect (' + source + ') for', currentVideoId, 'lastVideoId:', lastVideoId);
+    cachedStreamingData = null;
+    // Short delay to let YouTube populate the player/ytInitialData for the new video.
+    setTimeout(() => {
+      extractViaInjection();
+      // Fallback if injection didn't produce a matching detection.
       setTimeout(() => {
-        extractViaInjection();
-        // Fallback if injection doesn't fire
-        setTimeout(() => {
-          if (lastVideoId !== currentVideoId) {
-            console.log('[YT Archiver] SPA fallback (yt-navigate-finish): trying DOM parse');
-            checkForChatReplay();
-          }
-        }, 1500);
-      }, 500);
-    }
-  });
+        if (reDetectPendingFor === currentVideoId) reDetectPendingFor = null;
+        if (lastVideoId !== currentVideoId) {
+          console.log('[YT Archiver] SPA fallback (' + source + '): trying DOM parse');
+          checkForChatReplay();
+        }
+      }, 1500);
+    }, 500);
+  }
 
-  // Strategy 2: popstate for browser back/forward navigation
-  window.addEventListener('popstate', () => {
-    const currentVideoId = getVideoId();
-    console.log('[YT Archiver] popstate fired, videoId:', currentVideoId, 'lastVideoId:', lastVideoId);
-    if (currentVideoId && currentVideoId !== lastVideoId) {
-      cachedStreamingData = null;
-      setTimeout(() => {
-        extractViaInjection();
-        setTimeout(() => {
-          if (lastVideoId !== currentVideoId) {
-            console.log('[YT Archiver] SPA fallback (popstate): trying DOM parse');
-            checkForChatReplay();
-          }
-        }, 1500);
-      }, 500);
-    }
-  });
+  // Strategy 1 & 2: canonical SPA navigation events + browser back/forward.
+  window.addEventListener('yt-navigate-finish', () => scheduleReDetect('yt-navigate-finish'));
+  window.addEventListener('popstate', () => scheduleReDetect('popstate'));
 
-  // Strategy 3: MutationObserver on title as an additional fallback
+  // Strategy 3: MutationObserver on <title> catches URL changes that skip the events.
   let lastObservedUrl = window.location.href;
   const observer = new MutationObserver(() => {
     const currentUrl = window.location.href;
     if (currentUrl !== lastObservedUrl) {
       lastObservedUrl = currentUrl;
-      const currentVideoId = getVideoId();
-      if (currentVideoId && currentVideoId !== lastVideoId) {
-        console.log('[YT Archiver] Title MutationObserver detected URL change, videoId:', currentVideoId);
-        cachedStreamingData = null;
-        setTimeout(() => {
-          extractViaInjection();
-          setTimeout(() => {
-            if (lastVideoId !== currentVideoId) {
-              console.log('[YT Archiver] SPA fallback (observer): trying DOM parse');
-              checkForChatReplay();
-            }
-          }, 1500);
-        }, 500);
-      }
+      scheduleReDetect('title-observer');
     }
   });
 
@@ -1599,20 +1616,8 @@
     characterData: true,
   });
 
-  // Strategy 4: URL polling. Shorts "swipe" navigation frequently does NOT emit
+  // Strategy 4: URL polling. Shorts "swipe" navigation frequently emits no
   // yt-navigate-finish and may not mutate <title> (two Shorts can share a title),
-  // so a lightweight 1s URL poll is the only reliable signal for shorts-to-shorts.
-  function reDetectIfVideoChanged() {
-    const currentVideoId = getVideoId();
-    if (currentVideoId && currentVideoId !== lastVideoId) {
-      cachedStreamingData = null;
-      setTimeout(() => {
-        extractViaInjection();
-        setTimeout(() => {
-          if (lastVideoId !== currentVideoId) checkForChatReplay();
-        }, 1500);
-      }, 500);
-    }
-  }
-  setInterval(reDetectIfVideoChanged, 1000);
+  // so a lightweight 1s URL poll is the catch-all for shorts-to-shorts.
+  setInterval(() => scheduleReDetect('poll'), 1000);
 })();
