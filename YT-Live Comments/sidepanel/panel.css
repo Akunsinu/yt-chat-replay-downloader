@@ -156,6 +156,14 @@ body {
   color: #ef5350;
 }
 
+.step-partial .step-icon {
+  color: #f0a832;
+}
+
+.step-partial .step-status {
+  color: #f0a832;
+}
+
 /* Spinner */
 .spinner {
   display: inline-block;

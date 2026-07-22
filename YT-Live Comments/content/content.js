@@ -297,7 +297,7 @@
     try {
       const response = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await buildAuthHeaders()) },
         credentials: 'include',
         body: JSON.stringify({
           context: { client: clientContext },
@@ -446,7 +446,20 @@
     const maxRetries = 3;
     let topLevelCount = 0;
     let replyCount = 0;
+    let expectedTotal = null; // header countText — YouTube's own total (incl. replies)
+    let failedReplyThreads = 0;
     const replyContinuations = []; // { token, parentCommentId }
+    // One Phase-2 fetch per parent: reply tokens can arrive via multiple paths
+    // (contents, subThreads, viewReplies) and — now that page 1 gets re-walked
+    // under Newest-first sort — the same thread can be seen twice.
+    const queuedReplyParents = new Set();
+    const queueReplyTokens = (tokens) => {
+      for (const rt of tokens) {
+        if (rt.parentCommentId && queuedReplyParents.has(rt.parentCommentId)) continue;
+        queuedReplyParents.add(rt.parentCommentId);
+        replyContinuations.push(rt);
+      }
+    };
     let isFirstPage = true;
     let pageNum = 0;
     // Rate-limit backoff: starts at 10s, doubles to a 60s cap on repeated 429s,
@@ -483,9 +496,10 @@
         retryCount = 0;
         rateLimitBackoffMs = 10000;
         const { comments, nextContinuation, replyTokens } = result;
+        if (result.expectedCount != null) expectedTotal = result.expectedCount;
 
         topLevelCount += comments.length;
-        replyContinuations.push(...replyTokens);
+        queueReplyTokens(replyTokens);
         console.log('[YT Archiver] Phase 1 page', pageNum - 1, ': got', comments.length,
           'comments (total:', topLevelCount, '), reply tokens:', replyTokens.length,
           '(total:', replyContinuations.length, '), nextCont:', !!nextContinuation);
@@ -493,7 +507,7 @@
         if (comments.length > 0) {
           chrome.runtime.sendMessage({
             type: 'COMMENTS_PAGE_RESULT',
-            data: { comments, topLevel: topLevelCount, replies: replyCount },
+            data: { comments, topLevel: topLevelCount, replies: replyCount, expectedTotal },
           }).catch(() => {});
         }
 
@@ -559,12 +573,13 @@
           if (!result) {
             console.warn('[YT Archiver] Phase 2: reply page returned null, parent:', rc.parentCommentId);
             retryCount++;
-            if (retryCount >= maxRetries) break;
+            if (retryCount >= maxRetries) { failedReplyThreads++; break; }
             await sleep(1000 * Math.pow(2, retryCount));
             continue;
           }
 
           retryCount = 0;
+          rateLimitBackoffMs = 10000;
           const { comments, nextContinuation } = result;
           console.log('[YT Archiver] Phase 2: reply page', replyPageNum,
             'for parent', rc.parentCommentId, ': got', comments.length,
@@ -580,7 +595,7 @@
           if (comments.length > 0) {
             chrome.runtime.sendMessage({
               type: 'COMMENTS_PAGE_RESULT',
-              data: { comments, topLevel: topLevelCount, replies: replyCount },
+              data: { comments, topLevel: topLevelCount, replies: replyCount, expectedTotal },
             }).catch(() => {});
           }
 
@@ -593,8 +608,27 @@
             return;
           }
 
+          // Rate limits get the same graduated backoff as Phase 1 and do NOT
+          // consume retries — previously a 429 burst here silently dropped
+          // whole reply threads, the main source of reply-count variance
+          // between users.
+          if (e.message?.includes('429') || e.message?.includes('rate')) {
+            chrome.runtime.sendMessage({
+              type: 'COMMENTS_RATE_LIMITED',
+              data: { backoffMs: rateLimitBackoffMs },
+            }).catch(() => {});
+            try {
+              await abortableSleep(rateLimitBackoffMs, commentsFetchAbortController.signal);
+            } catch (abortErr) {
+              isFetchingComments = false;
+              return;
+            }
+            rateLimitBackoffMs = Math.min(rateLimitBackoffMs * 2, rateLimitMaxMs);
+            continue;
+          }
+
           retryCount++;
-          if (retryCount >= maxRetries) break;
+          if (retryCount >= maxRetries) { failedReplyThreads++; break; }
           await sleep(1000 * Math.pow(2, retryCount));
         }
       }
@@ -605,11 +639,13 @@
     isFetchingComments = false;
     console.log('[YT Archiver] fetchAllComments complete. wasStopped:', wasStopped,
       ', topLevel:', topLevelCount, ', replies:', replyCount,
-      ', replyThreadsFetched:', replyContinuations.length);
+      ', replyThreadsFetched:', replyContinuations.length,
+      ', failedReplyThreads:', failedReplyThreads,
+      ', expectedTotal:', expectedTotal);
     if (!wasStopped) {
       chrome.runtime.sendMessage({
         type: 'COMMENTS_FETCH_DONE',
-        data: { topLevel: topLevelCount, replies: replyCount },
+        data: { topLevel: topLevelCount, replies: replyCount, expectedTotal, failedReplyThreads },
       }).catch(() => {});
     }
   }
@@ -630,7 +666,7 @@
 
     const response = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await buildAuthHeaders()) },
       credentials: 'include',
       body: JSON.stringify({
         context: { client: clientContext },
@@ -651,11 +687,25 @@
     return parseCommentsResponse(data, isFirstPage);
   }
 
+  // "96 Comments" / "1,234" / "1.2K comments" → integer (approximate for K/M)
+  function parseCommentCountText(text) {
+    const m = String(text).replace(/,/g, '').match(/([\d.]+)\s*([KM])?/i);
+    if (!m) return null;
+    let n = parseFloat(m[1]);
+    if (!isFinite(n)) return null;
+    const suffix = (m[2] || '').toUpperCase();
+    if (suffix === 'K') n *= 1000;
+    else if (suffix === 'M') n *= 1000000;
+    return Math.round(n);
+  }
+
   function parseCommentsResponse(data, isFirstPage = false) {
     const comments = [];
     let nextContinuation = null;
     const replyTokens = [];
     let headerSortContinuation = null;
+    let newestSortContinuation = null;
+    let expectedCount = null;
 
     try {
       // Build entity map from frameworkUpdates (new YouTube format)
@@ -695,21 +745,29 @@
             if (item.commentsHeaderRenderer) {
               const sortMenu = item.commentsHeaderRenderer.sortMenu?.sortFilterSubMenuRenderer?.subMenuItems;
               if (sortMenu?.length > 0) {
-                // Index 0 = "Top comments", Index 1 = "Newest first"
-                const sortItem = sortMenu[0]; // Use "Top comments" sort
-                const sortToken =
-                  sortItem?.serviceEndpoint?.continuationCommand?.token ||
-                  sortItem?.continuation?.reloadContinuationData?.continuation;
-                if (sortToken) {
-                  headerSortContinuation = sortToken;
-                  console.log('[YT Archiver] parseCommentsResponse: extracted sort continuation from header (len:', sortToken.length, ')');
-                }
+                // Index 0 = "Top comments", Index 1 = "Newest first".
+                // "Top" is a ranked feed whose pagination can end early or skip
+                // items; "Newest first" is a stable chronological index that
+                // reliably reaches every comment (same reason yt-dlp sorts by
+                // newest for extraction). Grab both: newest to switch the
+                // pagination chain onto, top as the legacy fallback.
+                const tokenOf = (si) =>
+                  si?.serviceEndpoint?.continuationCommand?.token ||
+                  si?.continuation?.reloadContinuationData?.continuation;
+                headerSortContinuation = tokenOf(sortMenu[0]) || null;
+                newestSortContinuation = tokenOf(sortMenu[1]) || null;
+                console.log('[YT Archiver] parseCommentsResponse: sort tokens — top:',
+                  !!headerSortContinuation, ', newest:', !!newestSortContinuation);
               }
-              // Also extract total comment count from header
+              // Total comment count from header — YouTube's ground truth
+              // (includes replies). Used to detect and report shortfall.
               const countRuns = item.commentsHeaderRenderer.countText?.runs;
-              if (countRuns) {
-                const countText = countRuns.map(r => r.text || '').join('');
-                console.log('[YT Archiver] parseCommentsResponse: comment count from header:', countText);
+              const countText = countRuns
+                ? countRuns.map(r => r.text || '').join('')
+                : (item.commentsHeaderRenderer.countText?.simpleText || '');
+              if (countText) {
+                expectedCount = parseCommentCountText(countText);
+                console.log('[YT Archiver] parseCommentsResponse: comment count from header:', countText, '→', expectedCount);
               }
             }
             // The header endpoint may also have a continuationItemRenderer for sort
@@ -786,7 +844,7 @@
                     let subParsed = null;
                     const subVm = subThread.commentViewModel?.commentViewModel;
                     if (subVm && hasEntityStore) {
-                      subParsed = parseCommentFromEntity(subVm, entityMap);
+                      subParsed = parseCommentFromEntity(subVm, entityMap, commentIdIndex);
                     }
                     if (!subParsed) {
                       const subRenderer = subThread.comment?.commentRenderer;
@@ -836,7 +894,7 @@
           // unlike top-level threads which use double nesting (thread.commentViewModel.commentViewModel)
           const replyVm = item.commentViewModel?.commentViewModel || item.commentViewModel;
           if (replyVm && hasEntityStore && replyVm.commentKey) {
-            const parsed = parseCommentFromEntity(replyVm, entityMap);
+            const parsed = parseCommentFromEntity(replyVm, entityMap, commentIdIndex);
             if (parsed) comments.push(parsed);
             continue;
           }
@@ -850,11 +908,16 @@
         }
       }
 
-      // If this is the first page and we got comments but no next continuation,
-      // use the header sort continuation as the next page token.
-      // This handles the case where YouTube returns header + comments in separate endpoints
-      // and the comments endpoint doesn't have its own continuation (relying on sort continuation).
-      if (isFirstPage && !nextContinuation && headerSortContinuation) {
+      // On the first page, switch the pagination chain onto "Newest first":
+      // restart from the newest-sort token even when the page has its own
+      // (Top-sort) continuation. Page 1's comments are kept; the newest chain
+      // re-yields them and the service worker's comment_id dedupe absorbs the
+      // overlap. Fall back to the old behavior (Top token, only when page 1
+      // had no continuation of its own) if newest isn't offered.
+      if (isFirstPage && newestSortContinuation) {
+        console.log('[YT Archiver] parseCommentsResponse: switching to Newest-first pagination for complete traversal');
+        nextContinuation = newestSortContinuation;
+      } else if (isFirstPage && !nextContinuation && headerSortContinuation) {
         console.log('[YT Archiver] parseCommentsResponse: first page, using header sort continuation as next page token');
         nextContinuation = headerSortContinuation;
       }
@@ -866,7 +929,7 @@
       console.error('[YT Archiver] Comments parse error:', e, e.stack);
     }
 
-    return { comments, nextContinuation, replyTokens };
+    return { comments, nextContinuation, replyTokens, expectedCount };
   }
 
   // New YouTube format: extract comment from entity store via commentViewModel keys
@@ -1048,11 +1111,69 @@
 
   let cachedInnertubeConfig = null;
 
+  // Resolvers waiting for the next page-bridge payload to be processed.
+  let bridgeWaiters = [];
+
+  function notifyBridgeArrived() {
+    const waiters = bridgeWaiters;
+    bridgeWaiters = [];
+    for (const w of waiters) w();
+  }
+
   function extractViaInjection() {
     const script = document.createElement('script');
     script.src = chrome.runtime.getURL('content/page-bridge.js');
     script.onload = () => script.remove();
     document.documentElement.appendChild(script);
+  }
+
+  // Inject the bridge and resolve once its payload has been processed, so
+  // cachedInnertubeConfig is as fresh as it's going to get before a fetch
+  // starts. The old fixed 300ms sleep lost this race on slow machines,
+  // leaving fetches on a hardcoded API key + client version — YouTube then
+  // answers in formats the parser may not expect, one source of per-user
+  // comment-count variance. Timeout fallback covers pages where the bridge
+  // can't run at all.
+  function injectAndWaitForBridge(timeoutMs = 1500) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      bridgeWaiters.push(() => { clearTimeout(timer); resolve(); });
+      extractViaInjection();
+    });
+  }
+
+  // ─── Innertube auth (SAPISIDHASH) ───
+  // youtube.com's own API calls always send `Authorization: SAPISIDHASH`
+  // derived from the SAPISID cookie alongside the cookies themselves.
+  // Cookie-only requests from logged-in users are served inconsistently
+  // (degraded or held-back comment sets), which showed up as different
+  // people archiving different comment counts from the same video. Logged
+  // out (no SAPISID) we send nothing — those requests are consistent.
+  async function buildAuthHeaders() {
+    try {
+      const m = document.cookie.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
+      if (!m) return {};
+      const origin = 'https://www.youtube.com';
+      const ts = Math.floor(Date.now() / 1000);
+      const bytes = new TextEncoder().encode(`${ts} ${m[1]} ${origin}`);
+      const digest = await crypto.subtle.digest('SHA-1', bytes);
+      const hex = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0')).join('');
+      const headers = {
+        'Authorization': `SAPISIDHASH ${ts}_${hex}`,
+        'X-Origin': origin,
+      };
+      // Multi-account sessions need the account index or YouTube answers for
+      // the default account.
+      const sessionIndex = cachedInnertubeConfig?.sessionIndex;
+      if (sessionIndex !== undefined && sessionIndex !== null && sessionIndex !== '') {
+        headers['X-Goog-AuthUser'] = String(sessionIndex);
+      }
+      return headers;
+    } catch (e) {
+      console.warn('[YT Archiver] buildAuthHeaders failed, continuing without auth:', e);
+      return {};
+    }
   }
 
   // ytInitialData carries the id of the video it was built for. If that id is
@@ -1072,6 +1193,9 @@
       const payload = JSON.parse(event.data.data);
       const ytInitialData = payload.ytInitialData;
       cachedInnertubeConfig = payload.innertubeConfig || cachedInnertubeConfig;
+      // Config is cached — release anyone gating a fetch on bridge freshness,
+      // even if detection below defers (fetches only need the config).
+      notifyBridgeArrived();
 
       const videoId = getVideoId();
       if (!videoId) return;
@@ -1312,7 +1436,7 @@
 
     const response = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await buildAuthHeaders()) },
       credentials: 'include',
       body: JSON.stringify({
         context: { client: clientContext },
@@ -1497,10 +1621,7 @@
       sendResponse({ status: 'checking' });
     } else if (message.type === 'START_FETCH_FROM_CONTENT') {
       if (message.continuation) {
-        extractViaInjection();
-        setTimeout(() => {
-          fetchAllMessages(message.continuation);
-        }, 300);
+        injectAndWaitForBridge().then(() => fetchAllMessages(message.continuation));
       }
       sendResponse({ status: 'ok' });
     } else if (message.type === 'STOP_FETCH_FROM_CONTENT') {
@@ -1513,10 +1634,7 @@
     } else if (message.type === 'START_COMMENTS_FETCH') {
       console.log('[YT Archiver] Received START_COMMENTS_FETCH, continuation:', !!message.continuation);
       if (message.continuation) {
-        extractViaInjection();
-        setTimeout(() => {
-          fetchAllComments(message.continuation);
-        }, 300);
+        injectAndWaitForBridge().then(() => fetchAllComments(message.continuation));
       }
       sendResponse({ status: 'ok' });
     } else if (message.type === 'STOP_COMMENTS_FETCH') {

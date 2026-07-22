@@ -9,6 +9,9 @@
       clientName: window.ytcfg.get('INNERTUBE_CLIENT_NAME'),
       clientVersion: window.ytcfg.get('INNERTUBE_CLIENT_VERSION'),
       visitorData: window.ytcfg.get('VISITOR_DATA'),
+      // Which signed-in account this tab is using — needed for the
+      // X-Goog-AuthUser header on authenticated Innertube calls.
+      sessionIndex: window.ytcfg.get('SESSION_INDEX'),
     };
   }
   // Prefer a player response that matches the URL. On Shorts (and after any SPA nav)

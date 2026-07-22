@@ -119,8 +119,13 @@ async function renderAndZip({ comments, chat, theme, folderPrefix, dateStr }) {
   // Report that we're now zipping
   reportProgress(grandTotal, grandTotal);
 
-  const zipBlob = await zip.generateAsync({ type: 'base64' });
-  return { base64: zipBlob, count: grandTotal };
+  // Return a blob URL, not base64: the zip routinely exceeds the ~2MB cap
+  // Chrome enforces on data-URL downloads (silent FILE_FAILED). The service
+  // worker downloads from this URL and closes the offscreen document, which
+  // frees the blob.
+  const zipBlob = await zip.generateAsync({ type: 'blob' });
+  const blobUrl = URL.createObjectURL(zipBlob);
+  return { blobUrl, count: grandTotal };
 }
 
 function buildStyles(c) {

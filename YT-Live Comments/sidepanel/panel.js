@@ -77,6 +77,11 @@ function updateStepUI(steps) {
         iconEl.textContent = '\u2713'; // checkmark
         statusEl.textContent = getCompleteText(name);
         break;
+      case 'partial':
+        stepEl.classList.add('step-partial');
+        iconEl.textContent = '\u26a0'; // warning sign
+        statusEl.textContent = getPartialText(name);
+        break;
       case 'skipped':
         stepEl.classList.add('step-skipped');
         iconEl.textContent = '\u2014'; // dash
@@ -151,10 +156,26 @@ function getCompleteText(stepName) {
   }
 }
 
+function getPartialText(stepName) {
+  if (stepName === 'comments') {
+    const el = document.getElementById('step-status-comments');
+    const count = parseInt(el?.dataset?.count || '0', 10);
+    const expected = parseInt(el?.dataset?.expected || '0', 10);
+    if (count && expected) return `${count.toLocaleString()} of ~${expected.toLocaleString()} comments (partial)`;
+    if (count) return `${count.toLocaleString()} comments (partial)`;
+    return 'Partial';
+  }
+  if (stepName === 'liveChat') {
+    const count = parseInt(document.getElementById('step-status-liveChat')?.dataset?.count || '0', 10);
+    return count ? `${count.toLocaleString()} messages (partial)` : 'Partial';
+  }
+  return 'Partial';
+}
+
 function updateButtons() {
   const steps = currentArchiveSteps;
   const anyRunning = Object.values(steps).some(s => s === 'fetching' || s === 'downloading');
-  const allDone = Object.values(steps).every(s => s === 'complete' || s === 'skipped' || s === 'error');
+  const allDone = Object.values(steps).every(s => s === 'complete' || s === 'partial' || s === 'skipped' || s === 'error');
 
   isArchiveRunning = anyRunning;
 
@@ -176,11 +197,16 @@ function updateButtons() {
 
   // Individual action buttons
   const commentsBtn = document.getElementById('btn-fetch-comments');
+  const retryCommentsBtn = document.getElementById('btn-retry-comments');
   const chatBtn = document.getElementById('btn-fetch-chat');
   const videoBtn = document.getElementById('btn-download-video');
 
   commentsBtn.classList.toggle('hidden',
     !currentVideoData?.commentsContinuationToken || steps.comments === 'fetching');
+  // Retry keeps what's already fetched and merges in whatever the re-crawl
+  // finds (dedup by comment id) — only offered when the last run was partial.
+  retryCommentsBtn.classList.toggle('hidden',
+    steps.comments !== 'partial' || anyRunning || !currentVideoData?.commentsContinuationToken);
   chatBtn.classList.toggle('hidden',
     !currentVideoData?.chatContinuationToken || steps.liveChat === 'fetching');
   // yt-dlp handles its own URL resolution — show button whenever there's a videoId.
@@ -201,9 +227,10 @@ function updateExportOptions() {
   const chatCSV = document.getElementById('opt-livechat-csv');
   const chatHTML = document.getElementById('opt-livechat-html');
 
+  // Partial data is still exportable — don't lock users out of what they have.
   const hasMetadata = steps.metadata === 'complete';
-  const hasComments = steps.comments === 'complete';
-  const hasChat = steps.liveChat === 'complete';
+  const hasComments = steps.comments === 'complete' || steps.comments === 'partial';
+  const hasChat = steps.liveChat === 'complete' || steps.liveChat === 'partial';
 
   toggleExportOption(metaOpt, hasMetadata);
   toggleExportOption(commentsCSV, hasComments);
@@ -442,17 +469,14 @@ async function init() {
       setVideoInfo(state.videoData);
       showSection('detected');
 
-      if (state.archiveSteps) {
-        updateStepUI(state.archiveSteps);
-      }
-
-      // Update counts from state
+      // Seed count datasets BEFORE updateStepUI so complete/partial status
+      // text can include them.
       if (state.commentCount > 0) {
         const statusEl = document.getElementById('step-status-comments');
         if (statusEl) {
           statusEl.dataset.count = state.commentCount;
-          if (state.archiveSteps?.comments === 'complete') {
-            statusEl.textContent = `${state.commentCount.toLocaleString()} comments`;
+          if (state.commentsExpectedTotal > 0) {
+            statusEl.dataset.expected = state.commentsExpectedTotal;
           }
         }
       }
@@ -460,10 +484,11 @@ async function init() {
         const statusEl = document.getElementById('step-status-liveChat');
         if (statusEl) {
           statusEl.dataset.count = state.messageCount;
-          if (state.archiveSteps?.liveChat === 'complete') {
-            statusEl.textContent = `${state.messageCount.toLocaleString()} messages`;
-          }
         }
+      }
+
+      if (state.archiveSteps) {
+        updateStepUI(state.archiveSteps);
       }
     } else {
       console.log('[Panel] No video data, sending CHECK_PAGE');
@@ -523,7 +548,13 @@ chrome.runtime.onMessage.addListener((message) => {
       const statusEl = document.getElementById('step-status-comments');
       if (statusEl) {
         statusEl.dataset.count = message.data.commentCount;
-        statusEl.textContent = `${message.data.commentCount.toLocaleString()} comments...`;
+        const expected = message.data.expectedTotal;
+        if (expected > 0) {
+          statusEl.dataset.expected = expected;
+          statusEl.textContent = `${message.data.commentCount.toLocaleString()} of ~${expected.toLocaleString()} comments...`;
+        } else {
+          statusEl.textContent = `${message.data.commentCount.toLocaleString()} comments...`;
+        }
       }
       break;
     }
@@ -532,6 +563,11 @@ chrome.runtime.onMessage.addListener((message) => {
       const statusEl = document.getElementById('step-status-comments');
       if (statusEl) {
         statusEl.dataset.count = message.data.commentCount;
+        if (message.data.expectedTotal > 0) {
+          statusEl.dataset.expected = message.data.expectedTotal;
+        }
+        // Final text comes from the ARCHIVE_STEP_UPDATE that follows this
+        // message (complete vs partial); set a sane default meanwhile.
         statusEl.textContent = `${message.data.commentCount.toLocaleString()} comments`;
       }
       break;
@@ -772,6 +808,11 @@ document.getElementById('btn-stop-archive').addEventListener('click', () => {
 document.getElementById('btn-fetch-comments').addEventListener('click', () => {
   hideError();
   sendMsg({ type: 'START_COMMENTS_FETCH' });
+});
+
+document.getElementById('btn-retry-comments').addEventListener('click', () => {
+  hideError();
+  sendMsg({ type: 'START_COMMENTS_FETCH', retry: true });
 });
 
 document.getElementById('btn-fetch-chat').addEventListener('click', () => {

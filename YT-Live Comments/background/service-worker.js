@@ -12,6 +12,24 @@ let videoMetadata = null;
 let regularComments = [];
 let commentsFetchState = 'idle'; // idle, fetching, complete, error
 let commentsFetchProgress = { topLevel: 0, replies: 0 };
+// Dedupe index over regularComments. Makes retry passes safe (re-crawl and
+// merge — only unseen comments get added) and absorbs the overlap created by
+// the Newest-first sort switch and the subThreads/Phase-2 double-fetch.
+let seenCommentIds = new Set();
+// YouTube's own comment total from the comments header (includes replies).
+// Ground truth for detecting and reporting shortfall.
+let commentsExpectedTotal = null;
+
+function commentKey(c) {
+  return c.comment_id || `${c.author_channel_id}|${c.published_time_text}|${c.text}`;
+}
+
+function rebuildSeenCommentIds() {
+  seenCommentIds = new Set(regularComments.map(commentKey));
+}
+
+// Resolvers waiting for the next VIDEO_PAGE_DETECTED (re-detection ack).
+let pendingDetectionResolvers = [];
 let archiveSteps = {
   metadata: 'pending',
   comments: 'pending',
@@ -71,6 +89,7 @@ async function saveState() {
         regularComments: commentsTruncated ? [] : regularComments,
         commentsFetchState: commentsFetchState === 'fetching' ? 'idle' : commentsFetchState,
         commentsFetchProgress,
+        commentsExpectedTotal,
         archiveSteps,
         activeTabId,
         commentCountBackup: regularComments.length,
@@ -110,7 +129,7 @@ async function restoreState() {
   // and a fully corrupt blob leaves the worker in a clean idle state.
   const VALID_FETCH_STATES = ['idle', 'ready', 'fetching', 'complete', 'stopped', 'error'];
   const VALID_COMMENTS_STATES = ['idle', 'fetching', 'complete', 'error'];
-  const VALID_STEP_STATES = ['pending', 'fetching', 'downloading', 'complete', 'skipped', 'error'];
+  const VALID_STEP_STATES = ['pending', 'fetching', 'downloading', 'complete', 'partial', 'skipped', 'error'];
   const STEP_KEYS = ['metadata', 'comments', 'liveChat', 'video'];
   const defaultSteps = () => ({ metadata: 'pending', comments: 'pending', liveChat: 'pending', video: 'pending' });
 
@@ -127,6 +146,9 @@ async function restoreState() {
       : { current: 0, total: 0 };
     videoMetadata = (s.videoMetadata && typeof s.videoMetadata === 'object') ? s.videoMetadata : null;
     regularComments = Array.isArray(s.regularComments) ? s.regularComments : [];
+    rebuildSeenCommentIds();
+    commentsExpectedTotal = (typeof s.commentsExpectedTotal === 'number' && s.commentsExpectedTotal > 0)
+      ? s.commentsExpectedTotal : null;
     commentsFetchState = VALID_COMMENTS_STATES.includes(s.commentsFetchState) ? s.commentsFetchState : 'idle';
     commentsFetchProgress = (s.commentsFetchProgress && typeof s.commentsFetchProgress === 'object')
       ? { topLevel: Number(s.commentsFetchProgress.topLevel) || 0, replies: Number(s.commentsFetchProgress.replies) || 0 }
@@ -151,6 +173,8 @@ async function restoreState() {
     fetchProgress = { current: 0, total: 0 };
     videoMetadata = null;
     regularComments = [];
+    seenCommentIds = new Set();
+    commentsExpectedTotal = null;
     commentsFetchState = 'idle';
     commentsFetchProgress = { topLevel: 0, replies: 0 };
     archiveSteps = defaultSteps();
@@ -198,6 +222,8 @@ async function handleMessage(message, sender, sendResponse) {
       if (isNewVideo) {
         chatMessages = [];
         regularComments = [];
+        seenCommentIds = new Set();
+        commentsExpectedTotal = null;
         fetchState = d.chatContinuationToken ? 'ready' : 'idle';
         fetchProgress = { current: 0, total: 0 };
         commentsFetchState = 'idle';
@@ -241,6 +267,8 @@ async function handleMessage(message, sender, sendResponse) {
           archiveSteps,
         },
       });
+      // Wake anything awaiting a re-detection (startFullArchive's ack gate).
+      for (const resolve of pendingDetectionResolvers.splice(0)) resolve();
       sendResponse({ status: 'ok' });
       break;
     }
@@ -276,6 +304,7 @@ async function handleMessage(message, sender, sendResponse) {
         commentCount: regularComments.length,
         commentsFetchState,
         commentsFetchProgress,
+        commentsExpectedTotal,
         archiveSteps,
       });
       break;
@@ -345,7 +374,7 @@ async function handleMessage(message, sender, sendResponse) {
     // From side panel: stop fetching chat
     case 'STOP_FETCH':
       fetchState = 'stopped';
-      archiveSteps.liveChat = chatMessages.length > 0 ? 'complete' : 'pending';
+      archiveSteps.liveChat = chatMessages.length > 0 ? 'partial' : 'pending';
       if (activeTabId) {
         chrome.tabs.sendMessage(activeTabId, { type: 'STOP_FETCH_FROM_CONTENT' }).catch(() => {});
       }
@@ -363,12 +392,20 @@ async function handleMessage(message, sender, sendResponse) {
       sendResponse({ status: 'ok' });
       // Check if this is from the content script (has continuation) or from panel
       const token = message.continuation || currentVideoData?.commentsContinuationToken;
-      console.log('[YT Archiver SW] START_COMMENTS_FETCH: token length:', token?.length, 'from:', sender.tab ? 'tab' : 'panel');
+      const isRetry = message.retry === true;
+      console.log('[YT Archiver SW] START_COMMENTS_FETCH: token length:', token?.length,
+        'from:', sender.tab ? 'tab' : 'panel', 'retry:', isRetry);
       if (token && !sender.tab) {
-        // From panel: need to forward to content script
+        // From panel: need to forward to content script.
+        // A retry pass keeps everything collected so far — the re-crawl merges
+        // via the comment_id dedupe, so it can only gain comments.
         commentsFetchState = 'fetching';
-        regularComments = [];
-        commentsFetchProgress = { topLevel: 0, replies: 0 };
+        if (!isRetry) {
+          regularComments = [];
+          seenCommentIds = new Set();
+          commentsExpectedTotal = null;
+          commentsFetchProgress = { topLevel: 0, replies: 0 };
+        }
         archiveSteps.comments = 'fetching';
         broadcastToSidePanel({ type: 'COMMENTS_FETCH_STARTED' });
         broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
@@ -408,7 +445,8 @@ async function handleMessage(message, sender, sendResponse) {
     // From side panel: stop comments fetch
     case 'STOP_COMMENTS_FETCH':
       commentsFetchState = regularComments.length > 0 ? 'complete' : 'idle';
-      archiveSteps.comments = regularComments.length > 0 ? 'complete' : 'pending';
+      // User-stopped mid-crawl → what we have is by definition incomplete.
+      archiveSteps.comments = regularComments.length > 0 ? 'partial' : 'pending';
       if (activeTabId) {
         chrome.tabs.sendMessage(activeTabId, { type: 'STOP_COMMENTS_FETCH' }).catch(() => {});
       }
@@ -418,57 +456,91 @@ async function handleMessage(message, sender, sendResponse) {
       break;
 
     // From content script: batch of comments received
-    case 'COMMENTS_PAGE_RESULT':
-      if (message.data?.comments?.length > 0) {
-        regularComments.push(...message.data.comments);
-        commentsFetchProgress = {
-          topLevel: message.data.topLevel || commentsFetchProgress.topLevel,
-          replies: message.data.replies || commentsFetchProgress.replies,
-        };
+    case 'COMMENTS_PAGE_RESULT': {
+      if (message.data?.expectedTotal != null) {
+        commentsExpectedTotal = message.data.expectedTotal;
+      }
+      const incoming = message.data?.comments || [];
+      const fresh = [];
+      for (const c of incoming) {
+        const key = commentKey(c);
+        if (seenCommentIds.has(key)) continue;
+        seenCommentIds.add(key);
+        fresh.push(c);
+      }
+      if (fresh.length > 0) {
+        regularComments.push(...fresh);
+        // Count locally from deduped data — the content script's counters
+        // include duplicates (sort-switch overlap, retry passes).
+        for (const c of fresh) {
+          if (c.parent_comment_id) commentsFetchProgress.replies++;
+          else commentsFetchProgress.topLevel++;
+        }
         broadcastToSidePanel({
           type: 'COMMENTS_PROGRESS',
           data: {
             commentCount: regularComments.length,
+            expectedTotal: commentsExpectedTotal,
             topLevel: commentsFetchProgress.topLevel,
             replies: commentsFetchProgress.replies,
           },
         });
-        if (regularComments.length % 500 < message.data.comments.length) {
+        if (regularComments.length % 500 < fresh.length) {
           saveState();
         }
       }
       sendResponse({ status: 'ok' });
       break;
+    }
 
     // From content script: comments fetching complete
-    case 'COMMENTS_FETCH_DONE':
+    case 'COMMENTS_FETCH_DONE': {
       commentsFetchState = 'complete';
-      archiveSteps.comments = 'complete';
-      commentsFetchProgress = {
-        topLevel: message.data?.topLevel || commentsFetchProgress.topLevel,
-        replies: message.data?.replies || commentsFetchProgress.replies,
-      };
+      if (message.data?.expectedTotal != null) {
+        commentsExpectedTotal = message.data.expectedTotal;
+      }
+      const failedThreads = message.data?.failedReplyThreads || 0;
+      // Honest completion: compare against YouTube's own header count.
+      // Small tolerance because that count can lag (deleted/held comments
+      // stay counted for a while).
+      const fetched = regularComments.length;
+      const shortfall = commentsExpectedTotal != null ? commentsExpectedTotal - fetched : 0;
+      const tolerance = commentsExpectedTotal != null
+        ? Math.max(2, Math.round(commentsExpectedTotal * 0.02)) : 0;
+      const isPartial = failedThreads > 0 || shortfall > tolerance;
+      archiveSteps.comments = isPartial ? 'partial' : 'complete';
+      console.log('[YT Archiver SW] COMMENTS_FETCH_DONE: fetched', fetched,
+        'expected', commentsExpectedTotal, 'failedThreads', failedThreads, '→', archiveSteps.comments);
       saveState();
       broadcastToSidePanel({
         type: 'COMMENTS_FETCH_COMPLETE',
-        data: { commentCount: regularComments.length, ...commentsFetchProgress },
+        data: {
+          commentCount: fetched,
+          expectedTotal: commentsExpectedTotal,
+          partial: isPartial,
+          failedReplyThreads: failedThreads,
+          ...commentsFetchProgress,
+        },
       });
       broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
       // If archiving, move to next step
       if (isArchiving) continueArchive('comments');
       sendResponse({ status: 'ok' });
       break;
+    }
 
     // From content script: comments fetch error
     case 'COMMENTS_FETCH_ERROR':
       commentsFetchState = 'error';
-      archiveSteps.comments = regularComments.length > 0 ? 'complete' : 'error';
+      // Partial, not complete: data survived but the crawl didn't finish.
+      archiveSteps.comments = regularComments.length > 0 ? 'partial' : 'error';
       saveState();
       broadcastToSidePanel({
         type: 'COMMENTS_FETCH_ERROR_MSG',
         data: {
           error: message.data?.error || 'Unknown error',
           commentCount: regularComments.length,
+          expectedTotal: commentsExpectedTotal,
         },
       });
       broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
@@ -534,7 +606,8 @@ async function handleMessage(message, sender, sendResponse) {
     // From content script: chat fetch error
     case 'FETCH_PAGE_ERROR':
       fetchState = 'error';
-      archiveSteps.liveChat = chatMessages.length > 0 ? 'complete' : 'error';
+      // Partial, not complete: the replay didn't reach its end.
+      archiveSteps.liveChat = chatMessages.length > 0 ? 'partial' : 'error';
       saveState();
       broadcastToSidePanel({
         type: 'FETCH_ERROR',
@@ -644,7 +717,17 @@ function broadcastToSidePanel(message) {
 // ─── Helpers ───
 
 async function resolveActiveTab() {
-  if (activeTabId) return activeTabId;
+  // Verify the cached tab still exists — a closed tab leaves a dead id here
+  // and every sendMessage after that errors out individual steps.
+  if (activeTabId != null) {
+    try {
+      await chrome.tabs.get(activeTabId);
+      return activeTabId;
+    } catch (_) {
+      console.warn('[YT Archiver] Cached tab', activeTabId, 'is gone; re-querying');
+      activeTabId = null;
+    }
+  }
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tabs[0]) {
@@ -671,8 +754,16 @@ async function startFullArchive() {
     try {
       console.log('[YT Archiver] startFullArchive: re-detecting video data...');
       await chrome.tabs.sendMessage(activeTabId, { type: 'CHECK_FOR_CHAT_REPLAY' });
-      // Wait for the content script to process and send back VIDEO_PAGE_DETECTED
-      await new Promise(resolve => setTimeout(resolve, 2500));
+      // Wait for the actual VIDEO_PAGE_DETECTED ack, not a fixed sleep — a slow
+      // page used to let the archive start on stale tokens. Timeout covers the
+      // content script's own 1.5s injection fallback plus processing headroom.
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          console.warn('[YT Archiver] startFullArchive: re-detection timed out, proceeding with existing data');
+          resolve();
+        }, 4000);
+        pendingDetectionResolvers.push(() => { clearTimeout(timer); resolve(); });
+      });
       console.log('[YT Archiver] startFullArchive: re-detection complete, videoData=', !!currentVideoData,
         'comments token:', !!currentVideoData?.commentsContinuationToken,
         'chat token:', !!currentVideoData?.chatContinuationToken,
@@ -685,6 +776,8 @@ async function startFullArchive() {
   // Reset all steps for fresh archive (supports Re-Archive)
   chatMessages = [];
   regularComments = [];
+  seenCommentIds = new Set();
+  commentsExpectedTotal = null;
   fetchState = 'idle';
   fetchProgress = { current: 0, total: 0 };
   commentsFetchState = 'idle';
@@ -774,7 +867,7 @@ async function continueArchive(completedStep) {
 
 function checkArchiveComplete() {
   const steps = Object.values(archiveSteps);
-  const allDone = steps.every(s => s === 'complete' || s === 'skipped' || s === 'error');
+  const allDone = steps.every(s => s === 'complete' || s === 'partial' || s === 'skipped' || s === 'error');
   if (allDone) {
     isArchiving = false;
     broadcastToSidePanel({ type: 'ARCHIVE_COMPLETE', data: { archiveSteps } });
@@ -788,7 +881,7 @@ async function stopAllFetching() {
   // Stop chat
   if (fetchState === 'fetching') {
     fetchState = 'stopped';
-    archiveSteps.liveChat = chatMessages.length > 0 ? 'complete' : 'pending';
+    archiveSteps.liveChat = chatMessages.length > 0 ? 'partial' : 'pending';
     if (tabId) {
       chrome.tabs.sendMessage(tabId, { type: 'STOP_FETCH_FROM_CONTENT' }).catch(() => {});
     }
@@ -797,7 +890,7 @@ async function stopAllFetching() {
   // Stop comments
   if (commentsFetchState === 'fetching') {
     commentsFetchState = regularComments.length > 0 ? 'complete' : 'idle';
-    archiveSteps.comments = regularComments.length > 0 ? 'complete' : 'pending';
+    archiveSteps.comments = regularComments.length > 0 ? 'partial' : 'pending';
     if (tabId) {
       chrome.tabs.sendMessage(tabId, { type: 'STOP_COMMENTS_FETCH' }).catch(() => {});
     }
@@ -1311,17 +1404,21 @@ async function exportCommentScreenshots(theme = 'dark') {
       return;
     }
 
-    if (result?.base64) {
+    if (result?.blobUrl) {
       const filename = archiveFilename('comment_screenshots.zip');
-      const dataUrl = 'data:application/zip;base64,' + result.base64;
-      chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, (downloadId) => {
-        if (chrome.runtime.lastError) {
-          console.error('[YT Archiver] Screenshot zip download failed:', chrome.runtime.lastError.message);
-          broadcastToSidePanel({ type: 'SCREENSHOT_ERROR', data: { error: 'Download failed: ' + chrome.runtime.lastError.message } });
-        } else {
-          console.log('[YT Archiver] Screenshot zip downloaded:', downloadId, filename);
-          broadcastToSidePanel({ type: 'SCREENSHOT_COMPLETE' });
-        }
+      // Await the download so the finally-block doesn't close the offscreen
+      // document (killing the blob) before Chrome has accepted the download.
+      await new Promise((resolve) => {
+        chrome.downloads.download({ url: result.blobUrl, filename, saveAs: false }, (downloadId) => {
+          if (chrome.runtime.lastError) {
+            console.error('[YT Archiver] Screenshot zip download failed:', chrome.runtime.lastError.message);
+            broadcastToSidePanel({ type: 'SCREENSHOT_ERROR', data: { error: 'Download failed: ' + chrome.runtime.lastError.message } });
+          } else {
+            console.log('[YT Archiver] Screenshot zip downloaded:', downloadId, filename);
+            broadcastToSidePanel({ type: 'SCREENSHOT_COMPLETE' });
+          }
+          resolve();
+        });
       });
     }
   } catch (e) {
@@ -2123,9 +2220,14 @@ function generateYouTubeCloneHTML(theme, h2cSrc) {
   const videoPrefix = buildFolderPrefix();
   const videoFilename = `${videoPrefix}.mp4`;
 
-  // Prepare data for embedding
+  // Prepare data for embedding. Caps keep the single-file page loadable;
+  // when they bite, the archive banner says so instead of silently trimming.
+  const CLONE_CHAT_CAP = 10000;
+  const CLONE_COMMENT_CAP = 5000;
+  const chatTruncated = chatMessages.length > CLONE_CHAT_CAP;
+  const commentsTruncated = regularComments.length > CLONE_COMMENT_CAP;
   const metaJSON = JSON.stringify(meta);
-  const chatJSON = JSON.stringify(chatMessages.slice(0, 10000).map(m => ({
+  const chatJSON = JSON.stringify(chatMessages.slice(0, CLONE_CHAT_CAP).map(m => ({
     ts: m.timestamp_text,
     a: m.author_name,
     m: m.message,
@@ -2134,7 +2236,7 @@ function generateYouTubeCloneHTML(theme, h2cSrc) {
     sc: m.superchat_amount,
     img: m.author_profile_image,
   })));
-  const commentsJSON = JSON.stringify(regularComments.slice(0, 5000).map(cm => ({
+  const commentsJSON = JSON.stringify(regularComments.slice(0, CLONE_COMMENT_CAP).map(cm => ({
     id: cm.comment_id,
     pid: cm.parent_comment_id,
     a: cm.author_display_name,
@@ -2272,6 +2374,8 @@ ${subscriberCount ? '<div class="subs">' + esc(subscriberCount) + '</div>' : ''}
 <div class="archive-banner">
 <strong>Archived</strong> &bull; This is a locally archived copy of <a href="https://www.youtube.com/watch?v=${esc(videoId)}" target="_blank">youtube.com/watch?v=${esc(videoId)}</a>
 &bull; ${regularComments.length.toLocaleString()} comments &bull; ${chatMessages.length.toLocaleString()} chat messages
+${commentsTruncated ? '<br><strong>Note:</strong> this page embeds the first ' + CLONE_COMMENT_CAP.toLocaleString() + ' of ' + regularComments.length.toLocaleString() + ' comments — the Comments HTML/CSV exports contain all of them.' : ''}
+${chatTruncated ? '<br><strong>Note:</strong> this page embeds the first ' + CLONE_CHAT_CAP.toLocaleString() + ' of ' + chatMessages.length.toLocaleString() + ' chat messages — the Live Chat HTML/CSV exports contain all of them.' : ''}
 </div>
 
 ${hasCommentData ? '<div class="comments-section"><div class="comments-header">' + regularComments.length.toLocaleString() + ' Comments</div><div id="commentsContainer"></div><div class="load-more-comments" id="loadMoreComments" style="display:none"><button id="btnLoadMoreComments">Load More Comments</button></div></div>' : ''}
