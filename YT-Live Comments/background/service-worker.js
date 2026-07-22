@@ -590,18 +590,37 @@ async function handleMessage(message, sender, sendResponse) {
       break;
 
     // From content script: chat fetching complete
-    case 'FETCH_PAGE_DONE':
+    case 'FETCH_PAGE_DONE': {
       fetchState = 'complete';
-      archiveSteps.liveChat = 'complete';
+      // Coverage check: chat messages carry their video offset, and we know
+      // the video duration. A crawl whose last message lands well short of
+      // the end means the replay chain stopped early — the old code gave
+      // that a green checkmark (e.g. 51 messages of a multi-hour stream).
+      // Thresholds are loose because quiet endings are legitimate: flag only
+      // when we're missing >10% of the video AND at least 5 minutes.
+      const lastTs = message.data?.lastTimestampMs || 0;
+      const durationSec = parseInt(videoMetadata?.lengthSeconds, 10) || 0;
+      let coverage = null;
+      let chatPartial = false;
+      if (durationSec > 0 && chatMessages.length > 0) {
+        const reachedSec = Math.floor(lastTs / 1000);
+        const gapSec = durationSec - reachedSec;
+        chatPartial = reachedSec < durationSec * 0.9 && gapSec > 300;
+        coverage = { reachedSec, durationSec };
+        console.log('[YT Archiver SW] Chat coverage: reached', reachedSec, 's of', durationSec,
+          's →', chatPartial ? 'partial' : 'complete');
+      }
+      archiveSteps.liveChat = chatPartial ? 'partial' : 'complete';
       saveState();
       broadcastToSidePanel({
         type: 'FETCH_COMPLETE',
-        data: { messageCount: chatMessages.length },
+        data: { messageCount: chatMessages.length, coverage, partial: chatPartial },
       });
       broadcastToSidePanel({ type: 'ARCHIVE_STEP_UPDATE', data: { archiveSteps } });
       if (isArchiving) continueArchive('liveChat');
       sendResponse({ status: 'ok' });
       break;
+    }
 
     // From content script: chat fetch error
     case 'FETCH_PAGE_ERROR':

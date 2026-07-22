@@ -57,6 +57,28 @@
           ?.liveChatRenderer;
       if (!liveChatRenderer) return null;
 
+      // Prefer the UNFILTERED "Live chat replay" token from the view selector.
+      // The conversationBar's default continuation is usually "Top chat
+      // replay" — YouTube's filtered feed that silently drops "spam and
+      // repeat" messages, often the large majority of chat — and WHICH view
+      // is default varies per user/experiment (one source of chat-count
+      // variance). Titles are localized, so match /live chat/i when possible
+      // and fall back to position: [0] = Top, [1] = full feed.
+      const subMenuItems =
+        liveChatRenderer.header?.liveChatHeaderRenderer?.viewSelector
+          ?.sortFilterSubMenuRenderer?.subMenuItems || [];
+      const itemToken = (si) =>
+        si?.continuation?.reloadContinuationData?.continuation ||
+        si?.serviceEndpoint?.continuationCommand?.token || null;
+      let fullFeedItem = subMenuItems.find(si => /live chat/i.test(si?.title || '') && itemToken(si));
+      if (!fullFeedItem && subMenuItems.length > 1) fullFeedItem = subMenuItems[1];
+      const fullFeedToken = itemToken(fullFeedItem);
+      if (fullFeedToken) {
+        console.log('[YT Archiver] Chat: using unfiltered "Live chat replay" token from view selector',
+          '(', subMenuItems.map(si => si?.title || '?').join(' / '), ')');
+        return fullFeedToken;
+      }
+
       const continuations = liveChatRenderer.continuations;
       if (!continuations || continuations.length === 0) return null;
 
@@ -1340,6 +1362,8 @@
     const maxRetries = 3;
     let rateLimitBackoffMs = 10000;
     const rateLimitMaxMs = 60000;
+    let pageCount = 0;
+    let lastTimestampMs = 0; // furthest video offset reached — coverage signal
 
     while (continuation && isFetching) {
       try {
@@ -1362,6 +1386,13 @@
         retryCount = 0;
         rateLimitBackoffMs = 10000;
         const { messages, nextContinuation } = result;
+        pageCount++;
+
+        for (const m of messages) {
+          if (m.timestamp_ms > lastTimestampMs) lastTimestampMs = m.timestamp_ms;
+        }
+        console.log('[YT Archiver] Chat page', pageCount, ':', messages.length,
+          'messages, reached', formatTimestamp(lastTimestampMs), ', nextCont:', !!nextContinuation);
 
         if (messages.length > 0) {
           chrome.runtime.sendMessage({
@@ -1374,8 +1405,11 @@
 
         if (!continuation) {
           isFetching = false;
+          console.log('[YT Archiver] Chat fetch done:', pageCount, 'pages, last offset',
+            formatTimestamp(lastTimestampMs));
           chrome.runtime.sendMessage({
             type: 'FETCH_PAGE_DONE',
+            data: { lastTimestampMs, pages: pageCount },
           }).catch(() => {});
           return;
         }
@@ -1467,12 +1501,23 @@
           const contData =
             cont.liveChatReplayContinuationData ||
             cont.timedContinuationData ||
-            cont.invalidationContinuationData;
+            cont.invalidationContinuationData ||
+            cont.reloadContinuationData;
           if (contData?.continuation) {
             nextContinuation = contData.continuation;
             break;
           }
         }
+        if (!nextContinuation) {
+          // Diagnosable early end: show what YouTube actually sent so a
+          // silent stop is visible in the console instead of invisible.
+          // (playerSeekContinuationData is intentionally not followed — it's
+          // for seeking, not sequential paging.)
+          console.log('[YT Archiver] Chat: no usable continuation; response offered:',
+            continuations.map(c => Object.keys(c).join(',')).join(' | '));
+        }
+      } else {
+        console.log('[YT Archiver] Chat: response had no continuations array (end of replay)');
       }
 
       const actions = liveChatContinuation.actions || [];

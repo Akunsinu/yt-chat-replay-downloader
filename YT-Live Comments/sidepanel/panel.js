@@ -156,6 +156,15 @@ function getCompleteText(stepName) {
   }
 }
 
+function fmtDuration(totalSec) {
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
+}
+
 function getPartialText(stepName) {
   if (stepName === 'comments') {
     const el = document.getElementById('step-status-comments');
@@ -166,7 +175,13 @@ function getPartialText(stepName) {
     return 'Partial';
   }
   if (stepName === 'liveChat') {
-    const count = parseInt(document.getElementById('step-status-liveChat')?.dataset?.count || '0', 10);
+    const el = document.getElementById('step-status-liveChat');
+    const count = parseInt(el?.dataset?.count || '0', 10);
+    const reached = parseInt(el?.dataset?.reached || '0', 10);
+    const duration = parseInt(el?.dataset?.duration || '0', 10);
+    if (count && reached && duration) {
+      return `${count.toLocaleString()} messages (partial — chat ends at ${fmtDuration(reached)} of ${fmtDuration(duration)})`;
+    }
     return count ? `${count.toLocaleString()} messages (partial)` : 'Partial';
   }
   return 'Partial';
@@ -600,6 +615,12 @@ chrome.runtime.onMessage.addListener((message) => {
       const statusEl = document.getElementById('step-status-liveChat');
       if (statusEl) {
         statusEl.dataset.count = message.data.messageCount;
+        if (message.data.coverage) {
+          statusEl.dataset.reached = message.data.coverage.reachedSec;
+          statusEl.dataset.duration = message.data.coverage.durationSec;
+        }
+        // Final text comes from the ARCHIVE_STEP_UPDATE that follows
+        // (complete vs partial); set a sane default meanwhile.
         statusEl.textContent = `${message.data.messageCount.toLocaleString()} messages`;
       }
       break;
