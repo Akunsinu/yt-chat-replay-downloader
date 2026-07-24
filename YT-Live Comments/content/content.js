@@ -57,28 +57,11 @@
           ?.liveChatRenderer;
       if (!liveChatRenderer) return null;
 
-      // Prefer the UNFILTERED "Live chat replay" token from the view selector.
-      // The conversationBar's default continuation is usually "Top chat
-      // replay" — YouTube's filtered feed that silently drops "spam and
-      // repeat" messages, often the large majority of chat — and WHICH view
-      // is default varies per user/experiment (one source of chat-count
-      // variance). Titles are localized, so match /live chat/i when possible
-      // and fall back to position: [0] = Top, [1] = full feed.
-      const subMenuItems =
-        liveChatRenderer.header?.liveChatHeaderRenderer?.viewSelector
-          ?.sortFilterSubMenuRenderer?.subMenuItems || [];
-      const itemToken = (si) =>
-        si?.continuation?.reloadContinuationData?.continuation ||
-        si?.serviceEndpoint?.continuationCommand?.token || null;
-      let fullFeedItem = subMenuItems.find(si => /live chat/i.test(si?.title || '') && itemToken(si));
-      if (!fullFeedItem && subMenuItems.length > 1) fullFeedItem = subMenuItems[1];
-      const fullFeedToken = itemToken(fullFeedItem);
-      if (fullFeedToken) {
-        console.log('[YT Archiver] Chat: using unfiltered "Live chat replay" token from view selector',
-          '(', subMenuItems.map(si => si?.title || '?').join(' / '), ')');
-        return fullFeedToken;
-      }
-
+      // NOTE: the watch page's viewSelector subMenuItems only carry tiny
+      // URL-escaped stub tokens (no video id) — get_live_chat_replay rejects
+      // them with HTTP 400. The real, full "Live chat replay" token arrives
+      // in the FIRST API response's header; fetchAllMessages switches to the
+      // unfiltered view there (see fullFeedToken in parseChatResponse).
       const continuations = liveChatRenderer.continuations;
       if (!continuations || continuations.length === 0) return null;
 
@@ -1364,6 +1347,7 @@
     const rateLimitMaxMs = 60000;
     let pageCount = 0;
     let lastTimestampMs = 0; // furthest video offset reached — coverage signal
+    let viewSwitched = false; // only switch to "Live chat replay" once
 
     while (continuation && isFetching) {
       try {
@@ -1385,6 +1369,18 @@
 
         retryCount = 0;
         rateLimitBackoffMs = 10000;
+
+        // If YouTube served the filtered "Top chat replay" view, restart the
+        // crawl from the unfiltered "Live chat replay" token in the response
+        // header. The filtered page's messages are discarded (the unfiltered
+        // feed re-serves them) so nothing is double-counted.
+        if (!viewSwitched && result.fullFeedToken) {
+          viewSwitched = true;
+          console.log('[YT Archiver] Chat: switching to unfiltered "Live chat replay" view');
+          continuation = result.fullFeedToken;
+          continue;
+        }
+
         const { messages, nextContinuation } = result;
         pageCount++;
 
@@ -1490,10 +1486,33 @@
   function parseChatResponse(data) {
     const messages = [];
     let nextContinuation = null;
+    let fullFeedToken = null;
 
     try {
       const liveChatContinuation = data?.continuationContents?.liveChatContinuation;
       if (!liveChatContinuation) return null;
+
+      // The response header's view selector carries FULL reload tokens for
+      // both chat views. If the currently selected view is not the
+      // unfiltered "Live chat replay" (which keeps spam/repeat messages that
+      // "Top chat replay" silently drops), surface its token so
+      // fetchAllMessages can switch to it. Titles are localized, so prefer
+      // the item that is NOT selected when there are exactly two views.
+      const subMenuItems =
+        liveChatContinuation.header?.liveChatHeaderRenderer?.viewSelector
+          ?.sortFilterSubMenuRenderer?.subMenuItems || [];
+      const itemToken = (si) =>
+        si?.continuation?.reloadContinuationData?.continuation ||
+        si?.serviceEndpoint?.continuationCommand?.token || null;
+      const selectedItem = subMenuItems.find((si) => si?.selected);
+      if (selectedItem && !/^live chat/i.test(selectedItem.title || '')) {
+        let liveItem = subMenuItems.find(
+          (si) => !si.selected && /^live chat/i.test(si?.title || '') && itemToken(si));
+        if (!liveItem && subMenuItems.length === 2) {
+          liveItem = subMenuItems.find((si) => !si.selected && itemToken(si));
+        }
+        if (liveItem) fullFeedToken = itemToken(liveItem);
+      }
 
       const continuations = liveChatContinuation.continuations;
       if (continuations) {
@@ -1538,7 +1557,7 @@
       console.error('[YT Archiver] Parse error:', e);
     }
 
-    return { messages, nextContinuation };
+    return { messages, nextContinuation, fullFeedToken };
   }
 
   function parseChatItem(item, offsetMs) {
