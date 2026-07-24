@@ -414,6 +414,43 @@
     return null;
   }
 
+  // Comment count + "Newest first" sort token from the engagement panel's
+  // title header. Needed because the engagement-panel comments feed (the
+  // layout some users get instead of the inline section) returns a page-1
+  // commentsHeaderRenderer WITHOUT countText or sortMenu — on that path the
+  // crawl used to stay on Top sort (lossy pagination) and had no expected
+  // total, so shortfalls looked complete. The panel header in ytInitialData
+  // carries both: contextualInfo ("129") and a Top/Newest menu with full
+  // continuation tokens.
+  let cachedPanelCommentsInfo = { newestToken: null, expectedCount: null };
+  function extractCommentsPanelInfo(ytInitialData) {
+    const info = { newestToken: null, expectedCount: null };
+    try {
+      for (const panel of (ytInitialData?.engagementPanels || [])) {
+        const sl = panel?.engagementPanelSectionListRenderer;
+        if (!sl) continue;
+        const target = sl.targetId || sl.panelIdentifier || '';
+        if (!String(target).toLowerCase().includes('comment')) continue;
+        const th = sl.header?.engagementPanelTitleHeaderRenderer;
+        if (!th) continue;
+        const ciRuns = th.contextualInfo?.runs;
+        const ciText = ciRuns ? ciRuns.map(r => r.text || '').join('')
+          : (th.contextualInfo?.simpleText || '');
+        if (ciText) info.expectedCount = parseCommentCountText(ciText);
+        const items = th.menu?.sortFilterSubMenuRenderer?.subMenuItems || [];
+        // Index 1 = "Newest first"; prefer the non-selected item since Top is
+        // the default, but fall back to position for odd states.
+        const newest = items.find(si => si && !si.selected
+          && si.serviceEndpoint?.continuationCommand?.token) || items[1];
+        info.newestToken = newest?.serviceEndpoint?.continuationCommand?.token || null;
+        break;
+      }
+    } catch (e) {
+      console.error('[YT Archiver] Error extracting panel comments info:', e);
+    }
+    return info;
+  }
+
   // Helper to extract continuation token from a continuationItemRenderer
   function extractContinuationFromItem(renderer) {
     if (!renderer) return null;
@@ -480,6 +517,7 @@
         console.log('[YT Archiver] Phase 1: fetching page', pageNum, ', isFirstPage:', isFirstPage,
           ', continuation len:', continuation.length);
         const result = await fetchCommentsPage(continuation, commentsFetchAbortController.signal, isFirstPage);
+        const wasFirstPage = isFirstPage;
         isFirstPage = false;
         pageNum++;
 
@@ -500,8 +538,25 @@
 
         retryCount = 0;
         rateLimitBackoffMs = 10000;
-        const { comments, nextContinuation, replyTokens } = result;
+        let { comments, nextContinuation, replyTokens } = result;
         if (result.expectedCount != null) expectedTotal = result.expectedCount;
+
+        // Engagement-panel layout: page 1's header arrives stripped (no
+        // countText, no sortMenu). Fall back to the values harvested from the
+        // panel's title header at detection time so the crawl still gets a
+        // ground-truth total and a complete Newest-first traversal. Page 1's
+        // comments are kept; the Newest chain re-yields them and the service
+        // worker's dedupe absorbs the overlap.
+        if (wasFirstPage) {
+          if (expectedTotal == null && cachedPanelCommentsInfo.expectedCount != null) {
+            expectedTotal = cachedPanelCommentsInfo.expectedCount;
+            console.log('[YT Archiver] Phase 1: expected count from engagement panel header:', expectedTotal);
+          }
+          if (!result.switchedToNewest && cachedPanelCommentsInfo.newestToken) {
+            nextContinuation = cachedPanelCommentsInfo.newestToken;
+            console.log('[YT Archiver] Phase 1: page 1 had no sort menu — switching to Newest-first via engagement panel token');
+          }
+        }
 
         topLevelCount += comments.length;
         queueReplyTokens(replyTokens);
@@ -711,6 +766,7 @@
     let headerSortContinuation = null;
     let newestSortContinuation = null;
     let expectedCount = null;
+    let switchedToNewest = false;
 
     try {
       // Build entity map from frameworkUpdates (new YouTube format)
@@ -922,9 +978,38 @@
       if (isFirstPage && newestSortContinuation) {
         console.log('[YT Archiver] parseCommentsResponse: switching to Newest-first pagination for complete traversal');
         nextContinuation = newestSortContinuation;
+        switchedToNewest = true;
       } else if (isFirstPage && !nextContinuation && headerSortContinuation) {
         console.log('[YT Archiver] parseCommentsResponse: first page, using header sort continuation as next page token');
         nextContinuation = headerSortContinuation;
+      }
+
+      // Completeness sweep: reply pages sometimes carry MORE reply entities in
+      // the frameworkUpdates entity store than they expose as continuation
+      // items (observed: 5 payloads, 3 items, no further continuation — the
+      // other 2 replies are simply never listed). Reply comment IDs are
+      // "parentId.childId", so any un-emitted entity with a dotted ID is a
+      // reply we'd otherwise silently lose. Emit it directly from the entity
+      // store; the service worker's dedupe absorbs any overlap.
+      // Reply-page items arrive wrapped in commentThreadRenderer, so the
+      // top-level branch parses them with no parent set. The dotted ID
+      // ("parentId.childId") tells us the parent — restore it so threading
+      // survives into exports.
+      for (const c of comments) {
+        if (!c.parent_comment_id && c.comment_id && c.comment_id.includes('.')) {
+          c.parent_comment_id = c.comment_id.split('.')[0];
+        }
+      }
+
+      const emittedIds = new Set(comments.map(c => c.comment_id));
+      for (const cid of Object.keys(commentIdIndex)) {
+        if (!cid.includes('.') || emittedIds.has(cid)) continue;
+        const parsed = parseCommentFromEntity({ commentId: cid }, entityMap, commentIdIndex);
+        if (parsed) {
+          parsed.parent_comment_id = cid.split('.')[0];
+          comments.push(parsed);
+          emittedIds.add(cid);
+        }
       }
 
       console.log('[YT Archiver] parseCommentsResponse: found', comments.length, 'comments,',
@@ -934,7 +1019,7 @@
       console.error('[YT Archiver] Comments parse error:', e, e.stack);
     }
 
-    return { comments, nextContinuation, replyTokens, expectedCount };
+    return { comments, nextContinuation, replyTokens, expectedCount, switchedToNewest };
   }
 
   // New YouTube format: extract comment from entity store via commentViewModel keys
@@ -1230,7 +1315,9 @@
       const freshYt = ytStale ? null : ytInitialData;
       const chatContinuationToken = extractContinuationToken(freshYt);
       const commentsContinuationToken = extractCommentsContinuationToken(freshYt);
-      console.log('[YT Archiver] Comments token:', commentsContinuationToken ? commentsContinuationToken.substring(0, 30) + '... (len=' + commentsContinuationToken.length + ')' : 'null', ytStale ? '(ytInitialData stale — dropped)' : '');
+      cachedPanelCommentsInfo = extractCommentsPanelInfo(freshYt);
+      console.log('[YT Archiver] Comments token:', commentsContinuationToken ? commentsContinuationToken.substring(0, 30) + '... (len=' + commentsContinuationToken.length + ')' : 'null', ytStale ? '(ytInitialData stale — dropped)' : '',
+        '| panel info: newest:', !!cachedPanelCommentsInfo.newestToken, ', expected:', cachedPanelCommentsInfo.expectedCount);
       const videoInfo = extractVideoInfo(freshYt);
 
       // playerResponse (when present) matches the URL, so its streams + videoDetails/
@@ -1313,6 +1400,7 @@
     const freshYt = ytStale ? null : ytInitialData;
     const chatContinuationToken = extractContinuationToken(freshYt);
     const commentsContinuationToken = extractCommentsContinuationToken(freshYt);
+    cachedPanelCommentsInfo = extractCommentsPanelInfo(freshYt);
     const videoInfo = extractVideoInfo(freshYt);
 
     lastVideoId = videoId;
